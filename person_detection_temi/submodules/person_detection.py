@@ -17,6 +17,7 @@ from person_detection_temi.submodules.SOD import SOD
 import os
 from ament_index_python.packages import get_package_share_directory
 from scipy.spatial.transform import Rotation as R
+import time
 
 class HumanPoseEstimationNode(Node):
     def __init__(self):
@@ -54,7 +55,7 @@ class HumanPoseEstimationNode(Node):
         self.get_logger().warning('Deep Learning Model Armed')
 
         # Warmup inference (GPU can be slow in the first inference)
-        self.model.detect(np.ones((720, 1280, 3), dtype=np.uint8), np.ones((720, 1280), dtype=np.uint16), self.template_img, detection_thr = 0.3)
+        self.model.detect(np.ones((480, 640, 3), dtype=np.uint8), np.ones((480, 640), dtype=np.uint16), self.template_img, detection_thr = 0.3)
         self.get_logger().warning('Warmup Inference Executed')
 
         # Frame ID from where the human is being detected
@@ -71,11 +72,7 @@ class HumanPoseEstimationNode(Node):
 
     def image_callback(self, rgbd_msg):
 
-        self.get_logger().warning('Ultimate TEMI Ready to Roll')
-
-        return
-
-        self.frame_id = rgbd_msg.camera_depth_optical_frame.header.frame_id
+        self.frame_id = rgbd_msg.depth.header.frame_id
 
         # Convert ROS Image messages to OpenCV images
         depth_image = self.cv_bridge.imgmsg_to_cv2(rgbd_msg.depth, desired_encoding='passthrough')
@@ -92,7 +89,14 @@ class HumanPoseEstimationNode(Node):
     def process_images(self, rgb_image, depth_image):
         # Your pose estimation logic here
         # For demonstration, let's assume we get the pose from some function
+
+        start_time = time.time()
+        ############################
         person_pose, person_orientation, bbox, pcd = self.model.detect(rgb_image, depth_image, self.template_img, detection_thr = 0.3)
+        ############################
+        end_time = time.time()
+        execution_time = (end_time - start_time) * 1000
+        self.get_logger().warning(f"Model Inference Time: {execution_time} ms")
 
         if person_pose is False:
             return
@@ -120,7 +124,7 @@ class HumanPoseEstimationNode(Node):
     def publish_debug_img(self, rgb_img, box):
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        self.publisher_debug_detection_image.publish(self.bridge.cv2_to_compressed_imgmsg(rgb_img))
+        self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
 
     def publish_human_pose(self, pose, orientation):
         # Publish the pose with covariance

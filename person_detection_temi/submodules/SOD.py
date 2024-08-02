@@ -23,6 +23,7 @@ class SOD:
         self.yolo = YOLO(yolo_model_path)  # load a pretrained model (recommended for training)
         self.yolo.to(self.device)
         
+        # Feature Extraction Model
         self.resnet = models.__dict__['resnet18'](pretrained=True)
         self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])  # Remove the last fully connected layer
         self.resnet = self.resnet.to(self.device)
@@ -42,10 +43,10 @@ class SOD:
         providers=[self.onnx_provider], 
         sess_options=opt)
 
-        fx, fy, cx, cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # Replace these values with your actual intrinsics
+        fx, fy, cx, cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
         # fx, fy, cx, cy = 384.20147705078125, 384.20147705078125, 324.1680908203125, 245.62278747558594  # Depth Camera Intrinsics
 
-        width, height = 1280, 720
+        width, height = 640, 480
 
         self.intrinsics = o3d.camera.PinholeCameraIntrinsic()
         self.intrinsics.set_intrinsics(width=width, height=height, fx=fx, fy=fy, cx=cx, cy=cy)
