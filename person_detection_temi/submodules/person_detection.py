@@ -23,7 +23,7 @@ class HumanPoseEstimationNode(Node):
         super().__init__('pose_estimation_node')
 
         # Create subscribers with message_filters
-        self.rgbd_subscription = self.create_rgbd_subscription(RGBD,'/camera/camera/rgbd',self.image_callback,10)
+        self.rgbd_subscription = self.create_subscription(RGBD,'/camera/camera/rgbd',self.image_callback,10)
         self.rgbd_subscription
 
         # Create publishers
@@ -100,17 +100,17 @@ class HumanPoseEstimationNode(Node):
         else:
 
             #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
-            if self.publisher_debug_detection_image.get_rgbd_subscription_count() > 0:
+            if self.publisher_debug_detection_image.get_subscription_count() > 0:
                 self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
                 self.publish_debug_img(rgb_image, bbox)
 
             # Generate and publish the point cloud
-            if self.publisher_pointcloud.get_rgbd_subscription_count() > 0:
+            if self.publisher_pointcloud.get_subscription_count() > 0:
                 self.get_logger().warning('Publishing Pointcloud that belongs to the desired Human')
                 self.publish_pointcloud(np.asarray(pcd.points))
 
             # Generate and publish both the tf and the posewith covariance stamped for the desired detected person
-            if self.publisher_human_pose.get_rgbd_subscription_count() > 0:
+            if self.publisher_human_pose.get_subscription_count() > 0:
                 self.get_logger().warning('Publishing Pose and yaw orientation that belongs to the desired Human')
                 composed_orientation = self.combined_rotation * R.from_quat(person_orientation)
                 self.publish_human_pose(person_pose, composed_orientation.as_quat())
