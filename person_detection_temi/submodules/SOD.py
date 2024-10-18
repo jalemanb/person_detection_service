@@ -10,7 +10,6 @@ import open3d as o3d
 import torchvision.transforms as transforms
 import torchreid
 
-
 class SOD:
 
     def __init__(self, yolo_model_path, feature_extracture_model_path) -> None:
@@ -19,7 +18,7 @@ class SOD:
         self.onnx_provider = 'CUDAExecutionProvider' if torch.cuda.is_available() else 'CPUExecutionProvider'
 
         # Detection Model
-        self.yolo = YOLO(yolo_model_path)  # load a pretrained model (recommended for training)
+        self.yolo = YOLO(yolo_model_path, task="segment_pose")  # load a pretrained model (recommended for training)
 
         self.features = torchreid.models.build_model(
             name='osnet_ain_x1_0',
@@ -39,15 +38,13 @@ class SOD:
             transforms.Normalize(mean=[0., 0., 0.],  std=[1, 1, 1])
         ])
 
-        fx, fy, cx, cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
+        self.fx, self.fy, self.cx, self.cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
         # fx, fy, cx, cy = 384.20147705078125, 384.20147705078125, 324.1680908203125, 245.62278747558594  # Depth Camera Intrinsics
 
         width, height = 640, 480
 
         self.intrinsics = o3d.camera.PinholeCameraIntrinsic()
-        self.intrinsics.set_intrinsics(width=width, height=height, fx=fx, fy=fy, cx=cx, cy=cy)
 
-        self.person_pcd = o3d.geometry.PointCloud()
 
         self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
 
@@ -64,13 +61,13 @@ class SOD:
             return []
 
         subimages = []
-        seg_masks = []
+        person_kpts = []
         bboxes = []
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
             masks = result.masks
-            print("result.keypoints.xyn.cpu().numpy()", result.keypoints)
-            for box, mask in zip(boxes, masks):
+            keypoints = result.keypoints
+            for box, mask, kpts in zip(boxes, masks, keypoints.xy):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 
                 # Masking the original RGB image
@@ -83,16 +80,18 @@ class SOD:
                 # Crop the Image
                 subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
 
-                print("b_mask.shape", b_mask.shape)
-                print("img_rgb.shape", img_rgb.shape)
+                # Getting Eyes+Torso+knees Keypoints for pose estimation
+                torso_kpts = kpts.cpu().numpy()[[1, 2, 5, 6, 11, 12, 13, 14], :]
+                torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
+                torso_kpts = np.array([kp for kp in torso_kpts if b_mask[kp[1], kp[0]] > 0])
 
                 # Store all the bounding box detections and subimages in a tensor
                 subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
                 bboxes.append((x1, y1, x2, y2))
-                seg_masks.append(b_mask)
+                person_kpts.append(torso_kpts)
 
         batched_tensor = torch.cat(subimages).to(device=self.device)
-        return [batched_tensor, bboxes, seg_masks]
+        return [batched_tensor, bboxes, person_kpts]
 
 
     def detect(self, img_rgb, img_depth, detection_thr=0.7, detection_class=0):
@@ -112,7 +111,7 @@ class SOD:
         if not (len(detections) > 0):
             return False, False, False, False
 
-        detections_imgs, bboxes, seg_masks = detections
+        detections_imgs, bboxes, kpts = detections
 
         # Measure time for `feature_extraction`
         start_time = time.time()
@@ -134,72 +133,22 @@ class SOD:
             return False, False, False, False
 
         bbox = bboxes[most_similar_idx]
-        masked_depth_img = cv2.bitwise_and(img_depth, img_depth, mask=seg_masks[most_similar_idx])
 
-        # Measure time for `compute_point_cloud`
-        start_time = time.time()
-        self.compute_point_cloud(masked_depth_img)
-        end_time = time.time()
-        compute_point_cloud_time = (end_time - start_time) * 1000  # Convert to milliseconds
-        print(f"compute_point_cloud execution time: {compute_point_cloud_time:.2f} ms")
-        total_execution_time += compute_point_cloud_time
 
         # Measure time for `get_person_pose`
-        if len(self.person_pcd.points) > 5:
-            start_time = time.time()
-            person_pose = self.get_person_pose(self.person_pcd)
-            end_time = time.time()
-            get_person_pose_time = (end_time - start_time) * 1000  # Convert to milliseconds
-            print(f"get_person_pose execution time: {get_person_pose_time:.2f} ms")
-            total_execution_time += get_person_pose_time
-        else:
-            person_pose = False
+
+        start_time = time.time()
+        person_pose = self.get_person_pose(kpts[most_similar_idx], img_depth)
+        end_time = time.time()
+        get_person_pose_time = (end_time - start_time) * 1000  # Convert to milliseconds
+        print(f"get_person_pose execution time: {get_person_pose_time:.2f} ms")
+        total_execution_time += get_person_pose_time
 
         # Print total execution time
         print(f"Total execution time: {total_execution_time:.2f} ms")
 
         # Return results
-        return person_pose, bbox, self.person_pcd, max_similarity
-
-    # def detect(self, img_rgb, img_depth, detection_thr = 0.7, detection_class = 0):
-
-    #     if self.template is None:
-    #         return False, False, False, False
-
-    #     # Run Object Detection
-    #     detections = self.masked_detections(img_rgb, detection_class=detection_class)  
-
-    #     # If not detections then return None
-    #     if not(len(detections) > 0):
-    #         return False, False, False, False
-        
-    #     detections_imgs, bboxes, seg_masks = detections
-
-    #     # Extract features from both the template image and each resulting detection (subimages taking considering the bounding boxes)
-    #     detections_features = self.feature_extraction(detections_imgs=detections_imgs)
-
-    #     # Apply similarity check between the template image features and the features from all the other candidate images to find the closest one
-    #     most_similar_idx, max_similarity = self.similarity_check(self.template_features, detections_features, detection_thr) 
-    
-    #     # If the similarity score doesnt pass a threshold value, then return no detection
-    #     if most_similar_idx is None:
-    #         return False, False, False, False
-
-    #     # Get the bounding box and mask corresponding to the candidate most similar to the tempate img
-    #     bbox = bboxes[most_similar_idx]
-    #     masked_depth_img = cv2.bitwise_and(img_depth, img_depth, mask=seg_masks[most_similar_idx]) 
-
-    #     # Compute the person pointloud fromt the given depth image and intrinsic camera parameters
-    #     self.compute_point_cloud(masked_depth_img)
-
-    #     if len(self.person_pcd.points) > 0:
-    #         # Get the person pose from the center of fitting a 3D bounding box around the person points
-    #         person_pose = self.get_person_pose(self.person_pcd)
-    #     else:
-    #         person_pose = False
-
-    #     # Return Corresponding bounding box for visualization
-    #     return person_pose, bbox, self.person_pcd, max_similarity
+        return person_pose, bbox, kpts[most_similar_idx], max_similarity
     
     def detect_mot(self, img, detection_class):
         # Run multiple object detection with a given desired class
@@ -271,24 +220,21 @@ class SOD:
         
         return features
 
-    def get_person_pose(self, pcd): # 3d person pose estimation wrt the camera reference frame
+    def get_person_pose(self, kpts, depth_img): # 3d person pose estimation wrt the camera reference frame
         # Wrap the person around a 3D bounding box
-        box = pcd.get_oriented_bounding_box()
 
-        # Get the entroid of the bounding box wrappig the person
-        return box.get_center()
+        if kpts.shape[0] < 2: # Not Enough Detected Keypoints proceed to compute the human pose
+            return False
+        
+        u = kpts[:, 0]
 
-    # Function to compute point cloud from depth image
-    def compute_point_cloud(self, depth_image):
-        # Converting depth image into o3d image format for pointcloud omputation
-        depth_o3d = o3d.geometry.Image(depth_image)
+        v = kpts[:, 1]
+        
+        z = depth_img[v, u]/1000. # get depth for specific keypoints and convert into m
 
-        # Create a point cloud from the depth image
-        pcd = o3d.geometry.PointCloud.create_from_depth_image(depth_o3d, self.intrinsics)
+        x = z*(u - self.cx)/self.fx
 
-        # Downsample pcl
-        downsampled_pcl = pcd.voxel_down_sample(voxel_size=0.05)
+        y = -z*(u - self.cy)/self.fy
 
-        # Remove person pcl outliers 
-        self.person_pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=10, std_ratio=0.1)
-        self.person_pcd = downsampled_pcl
+        return (x.mean(), y.mean(), z.mean())
+        
