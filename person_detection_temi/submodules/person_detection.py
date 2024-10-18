@@ -30,7 +30,8 @@ class HumanPoseEstimationNode(Node):
         # Create publishers
         self.publisher_human_pose = self.create_publisher(PoseWithCovarianceStamped, '/human_pose', 10)
         self.publisher_pointcloud = self.create_publisher(PointCloud2, '/human_pointcloud', 10)
-        self.publisher_debug_detection_image = self.create_publisher(CompressedImage, '/human_detection_debug/compressed/human_detected', 10)
+        self.publisher_debug_detection_image_compressed = self.create_publisher(CompressedImage, '/human_detection_debug/compressed/human_detected', 10)
+        self.publisher_debug_detection_image = self.create_publisher(Image, '/human_detection_debug/human_detected', 10)
 
         # Create a TransformBroadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -38,24 +39,30 @@ class HumanPoseEstimationNode(Node):
         # Bridge to convert ROS messages to OpenCV
         self.cv_bridge = CvBridge()
 
+        self.draw_box = False
+
         # Single Person Detection model
         # Setting up Available CUDA device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
-        yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-seg.pt')
-        orientation_path = os.path.join(pkg_shared_dir, 'models', 'rgbd_resnet18.onnx')
+        yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-seg.engine')
+        resnet_path = os.path.join(pkg_shared_dir, 'models', 'resnet50_market1501_aicity156.onnx')
+
         # Loading Template IMG
         template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb.png')
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, orientation_path)
+        self.model = SOD(yolo_path, resnet_path)
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 
+        # Initialize the template
+        self.model.template_update(self.template_img)
+
         # Warmup inference (GPU can be slow in the first inference)
-        self.model.detect(np.ones((480, 640, 3), dtype=np.uint8), np.ones((480, 640), dtype=np.uint16), self.template_img, detection_thr = 0.3)
+        self.model.detect(img_rgb = np.ones((480, 640, 3), dtype=np.uint8), img_depth = np.ones((480, 640), dtype=np.uint16), detection_thr = 0.3)
         self.get_logger().warning('Warmup Inference Executed')
 
         # Frame ID from where the human is being detected
@@ -92,39 +99,53 @@ class HumanPoseEstimationNode(Node):
 
         start_time = time.time()
         ############################
-        person_pose, person_orientation, bbox, pcd = self.model.detect(rgb_image, depth_image, self.template_img, detection_thr = 0.3)
+        person_pose, bbox, pcd, conf = self.model.detect(rgb_image, depth_image, detection_thr = 0.3)
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
         self.get_logger().warning(f"Model Inference Time: {execution_time} ms")
+        self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
-        if person_pose is False:
-            return
-        
-        else:
-
-            #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
-            if self.publisher_debug_detection_image.get_subscription_count() > 0:
-                self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
-                self.publish_debug_img(rgb_image, bbox)
+        if person_pose is not False:
+            self.draw_box = True
 
             # Generate and publish the point cloud
             if self.publisher_pointcloud.get_subscription_count() > 0:
                 self.get_logger().warning('Publishing Pointcloud that belongs to the desired Human')
                 self.publish_pointcloud(np.asarray(pcd.points))
+                # self.broadcast_human_pose(person_pose, composed_orientation.as_quat())
 
-            # Generate and publish both the tf and the posewith covariance stamped for the desired detected person
-            if self.publisher_human_pose.get_subscription_count() > 0:
-                self.get_logger().warning('Publishing Pose and yaw orientation that belongs to the desired Human')
-                composed_orientation = self.combined_rotation * R.from_quat(person_orientation)
-                self.publish_human_pose(person_pose, composed_orientation.as_quat())
-                self.broadcast_human_pose(person_pose, composed_orientation.as_quat())
+        else:
+            self.draw_box = False
 
 
-    def publish_debug_img(self, rgb_img, box):
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
+        # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
+        if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
+            self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, compressed=True, draw_box=self.draw_box, conf = conf)
+
+        #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
+        if self.publisher_debug_detection_image.get_subscription_count() > 0:
+            self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, compressed=False, draw_box=self.draw_box, conf = conf)
+
+
+    def publish_debug_img(self, rgb_img, box, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.75):
+        if draw_box:
+            x1, y1, x2, y2 = box
+            if conf > conf_thr:
+                cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            else:
+                cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+        if compressed:
+            self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
+        else:
+            self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
+
 
     def publish_human_pose(self, pose, orientation):
         # Publish the pose with covariance

@@ -3,45 +3,41 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torch.nn as nn
 import torch, cv2
-import os
-import onnx
-import onnxruntime as ort
+import os, time
 from person_detection_temi.submodules.utils.preprocessing import preprocess_rgb, preprocess_depth
 import numpy as np
 import open3d as o3d
 import torchvision.transforms as transforms
+import torchreid
+
 
 class SOD:
 
-    def __init__(self, yolo_model_path, orientation_model_path) -> None:
+    def __init__(self, yolo_model_path, feature_extracture_model_path) -> None:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.onnx_provider = 'CUDAExecutionProvider' if torch.cuda.is_available() else 'CPUExecutionProvider'
-        self.o3d_device = o3d.core.Device("CUDA:0") if o3d.core.cuda.is_available() else o3d.core.Device("CPU:0")
 
         # Detection Model
         self.yolo = YOLO(yolo_model_path)  # load a pretrained model (recommended for training)
-        self.yolo.to(self.device)
-        
-        # Feature Extraction Model
-        self.resnet = models.__dict__['resnet18'](pretrained=True)
-        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])  # Remove the last fully connected layer
-        self.resnet = self.resnet.to(self.device)
-        self.resnet.eval()
-        
-        self.resnet_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
 
-        # Orientation Estimation Model
-        opt = ort.SessionOptions()
-        opt.enable_profiling = False
-        onnx_model = onnx.load(orientation_model_path)
-        self.ort_session = ort.InferenceSession(
-        onnx_model.SerializeToString(),
-        providers=[self.onnx_provider], 
-        sess_options=opt)
+        self.features = torchreid.models.build_model(
+            name='osnet_ain_x1_0',
+            num_classes=1000,  # You can set num_classes to your number of classes, if using for training.
+            pretrained=True  # Set to False if you want an untrained model
+        )
+
+        self.features.eval()
+        self.features.eval().half()
+        self.features.to(self.device)
+
+        self.template = None
+        self.template_features = None
+        
+        self.img_transform = transforms.Compose([
+            transforms.ConvertImageDtype(torch.float),
+            transforms.Normalize(mean=[0., 0., 0.],  std=[1, 1, 1])
+        ])
 
         fx, fy, cx, cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
         # fx, fy, cx, cy = 384.20147705078125, 384.20147705078125, 324.1680908203125, 245.62278747558594  # Depth Camera Intrinsics
@@ -52,67 +48,175 @@ class SOD:
         self.intrinsics.set_intrinsics(width=width, height=height, fx=fx, fy=fy, cx=cx, cy=cy)
 
         self.person_pcd = o3d.geometry.PointCloud()
+
+        self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
+
         
     def to(self, device):
         self.device = device
-        self.yolo.to(device)
-        self.resnet.to(device)
+        # self.resnet.to(device)
 
-    def detect(self, img_rgb, img_depth, template, detection_thr = 0.7, detection_class = 0):
+    def masked_detections(self, img_rgb, detection_class = 0, size = (256, 256)):
 
-        # Run Object Detection
-        detections = self.detect_mot(img_rgb, detection_class=detection_class)  
+        results = self.detect_mot(img_rgb, detection_class=detection_class)  
 
-        # If not detections then return None
-        if not (len(detections[0].boxes) > 0):
+        if not (len(results[0].boxes) > 0):
+            return []
+
+        subimages = []
+        seg_masks = []
+        bboxes = []
+        for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
+            boxes = result.boxes  # Boxes object
+            masks = result.masks
+            print("result.keypoints.xyn.cpu().numpy()", result.keypoints)
+            for box, mask in zip(boxes, masks):
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                
+                # Masking the original RGB image
+                contour = mask.xy.pop().astype(np.int32).reshape(-1, 1, 2)
+                b_mask = np.zeros(img_rgb.shape[:2], np.uint8)
+                b_mask = cv2.drawContours(b_mask, [contour], -1, (255, 255, 255), cv2.FILLED)
+                # Define the kernel for erosion (you can adjust the size for stronger/weaker erosion)
+                b_mask = cv2.erode(b_mask, self.erosion_kernel, iterations=2)  # Apply erosion to the binary mask
+                mask3ch = cv2.bitwise_and(img_rgb, img_rgb, mask=b_mask)
+                # Crop the Image
+                subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
+
+                print("b_mask.shape", b_mask.shape)
+                print("img_rgb.shape", img_rgb.shape)
+
+                # Store all the bounding box detections and subimages in a tensor
+                subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
+                bboxes.append((x1, y1, x2, y2))
+                seg_masks.append(b_mask)
+
+        batched_tensor = torch.cat(subimages).to(device=self.device)
+        return [batched_tensor, bboxes, seg_masks]
+
+
+    def detect(self, img_rgb, img_depth, detection_thr=0.7, detection_class=0):
+        if self.template is None:
             return False, False, False, False
-        
-        # Run Object Detection
 
-        # Obtain Detection Subimages
-        detections_imgs = self.extract_subimages(img_rgb, detections)
+        total_execution_time = 0  # To accumulate total time
 
-        # Move search region img and template into selected device
-        template = torch.from_numpy(template).permute(2, 0, 1).unsqueeze(0).float().to(self.device)
-        detections_imgs = detections_imgs.to(self.device)
+        # Measure time for `masked_detections`
+        start_time = time.time()
+        detections = self.masked_detections(img_rgb, detection_class=detection_class)
+        end_time = time.time()
+        masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
+        print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
+        total_execution_time += masked_detections_time
 
-        # Extract features from both the template image and each resulting detection (subimages taking considering the bounding boxes)
-        template_features, detections_features = self.feature_extraction(template=template, detections_imgs=detections_imgs)
+        if not (len(detections) > 0):
+            return False, False, False, False
 
-        # Apply similarity check between the template image features and the features from all the other candidate images to find the closest one
-        most_similar_idx = self.similarity_check(template_features, detections_features, detection_thr) 
+        detections_imgs, bboxes, seg_masks = detections
 
-        # If the similarity score doesnt pass a threshold value, then return no detection
+        # Measure time for `feature_extraction`
+        start_time = time.time()
+        detections_features = self.feature_extraction(detections_imgs=detections_imgs)
+        end_time = time.time()
+        feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+        print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+        total_execution_time += feature_extraction_time
+
+        # Measure time for `similarity_check`
+        start_time = time.time()
+        most_similar_idx, max_similarity = self.similarity_check(self.template_features, detections_features, detection_thr)
+        end_time = time.time()
+        similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
+        print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
+        total_execution_time += similarity_check_time
+
         if most_similar_idx is None:
             return False, False, False, False
 
+        bbox = bboxes[most_similar_idx]
+        masked_depth_img = cv2.bitwise_and(img_depth, img_depth, mask=seg_masks[most_similar_idx])
 
-        # Get the bounding box and mask corresponding to the candidate most similar to the tempate img
-        bbox, mask = self.get_template_results(detections, most_similar_idx, (img_rgb.shape[1], img_rgb.shape[0]))
-        
-        # Given the desired person was detected, get RGB+D patches (subimages) to find the person orientation
-        # Also get the masked depth image for later 3D pose estimation
-        target_rgb, target_depth, masked_depth_img = self.get_target_rgb_and_depth(img_rgb, img_depth, bbox, mask)
-
-        # Get the orientation of the person using the model
-        orientation = self.yaw_to_quaternion(self.estimate_orientation(target_rgb, target_depth))
-
-        # Compute the person pointloud fromt the given depth image and intrinsic camera parameters
+        # Measure time for `compute_point_cloud`
+        start_time = time.time()
         self.compute_point_cloud(masked_depth_img)
+        end_time = time.time()
+        compute_point_cloud_time = (end_time - start_time) * 1000  # Convert to milliseconds
+        print(f"compute_point_cloud execution time: {compute_point_cloud_time:.2f} ms")
+        total_execution_time += compute_point_cloud_time
 
-        # Get the person pose from the center of fitting a 3D bounding box around the person points
-        person_pose = self.get_person_pose(self.person_pcd)
+        # Measure time for `get_person_pose`
+        if len(self.person_pcd.points) > 5:
+            start_time = time.time()
+            person_pose = self.get_person_pose(self.person_pcd)
+            end_time = time.time()
+            get_person_pose_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            print(f"get_person_pose execution time: {get_person_pose_time:.2f} ms")
+            total_execution_time += get_person_pose_time
+        else:
+            person_pose = False
 
-        # Return Corresponding bounding box for visualization
-        return person_pose, orientation, bbox, self.person_pcd
+        # Print total execution time
+        print(f"Total execution time: {total_execution_time:.2f} ms")
+
+        # Return results
+        return person_pose, bbox, self.person_pcd, max_similarity
+
+    # def detect(self, img_rgb, img_depth, detection_thr = 0.7, detection_class = 0):
+
+    #     if self.template is None:
+    #         return False, False, False, False
+
+    #     # Run Object Detection
+    #     detections = self.masked_detections(img_rgb, detection_class=detection_class)  
+
+    #     # If not detections then return None
+    #     if not(len(detections) > 0):
+    #         return False, False, False, False
+        
+    #     detections_imgs, bboxes, seg_masks = detections
+
+    #     # Extract features from both the template image and each resulting detection (subimages taking considering the bounding boxes)
+    #     detections_features = self.feature_extraction(detections_imgs=detections_imgs)
+
+    #     # Apply similarity check between the template image features and the features from all the other candidate images to find the closest one
+    #     most_similar_idx, max_similarity = self.similarity_check(self.template_features, detections_features, detection_thr) 
+    
+    #     # If the similarity score doesnt pass a threshold value, then return no detection
+    #     if most_similar_idx is None:
+    #         return False, False, False, False
+
+    #     # Get the bounding box and mask corresponding to the candidate most similar to the tempate img
+    #     bbox = bboxes[most_similar_idx]
+    #     masked_depth_img = cv2.bitwise_and(img_depth, img_depth, mask=seg_masks[most_similar_idx]) 
+
+    #     # Compute the person pointloud fromt the given depth image and intrinsic camera parameters
+    #     self.compute_point_cloud(masked_depth_img)
+
+    #     if len(self.person_pcd.points) > 0:
+    #         # Get the person pose from the center of fitting a 3D bounding box around the person points
+    #         person_pose = self.get_person_pose(self.person_pcd)
+    #     else:
+    #         person_pose = False
+
+    #     # Return Corresponding bounding box for visualization
+    #     return person_pose, bbox, self.person_pcd, max_similarity
     
     def detect_mot(self, img, detection_class):
         # Run multiple object detection with a given desired class
         return self.yolo(img, classes = detection_class)
     
-    def feature_extraction(self, template, detections_imgs):
+    def template_update(self, template):
+
+        detections = self.masked_detections(template)
+
+        if len(detections):
+            self.template = detections[0]
+
+        self.template_features = self.extract_features(self.template)
+    
+    def feature_extraction(self, detections_imgs):
         # Extract features for similarity check
-        return self.extract_features(template), self.extract_features(detections_imgs)
+        return self.extract_features(detections_imgs)
     
     def get_target_rgb_and_depth(self, rgb_img, depth_img, bbox, seg_mask):
         # Get the desired person subimage both in rgb and depth
@@ -126,26 +230,18 @@ class SOD:
         masked_depth_img = cv2.bitwise_and(depth_img, depth_img, mask=binary_mask)
 
         # Return Target Images With no background of the target person for orientation estimation
-        return masked_rgb_img[y1:y2, x1:x2], masked_depth_img[y1:y2, x1:x2], masked_depth_img
-    
-    def estimate_orientation(self, rgb_img, depth_img):
-        # Add batch dimension along the 0 axis to be able to process the data in the ONNX model
-        ready_depth_img = np.expand_dims(preprocess_depth(image=depth_img,output_size=(224,224)), 0)
-        ready_rgb_img = np.expand_dims(preprocess_rgb(image=rgb_img,output_size=(224,224)), 0)
-        # Run the model on the given data
-        onnx_preds = self.ort_session.run(None, {'rgb':ready_rgb_img,'depth':ready_depth_img})
-        # Return the person orientation in radians
-        return self.biternion2deg_numpy(onnx_preds[6])
+        return masked_depth_img, masked_rgb_img
 
     def similarity_check(self, template_features, detections_features, detection_thr):
+
         # Compute Similarity Check
-        cosine_similarities = F.cosine_similarity(template_features, detections_features)
+        similarities = F.cosine_similarity(template_features, detections_features, dim=1)
 
         # FInd most similar image
-        most_similar_idx = torch.argmax(cosine_similarities).item()
+        max_similarity, most_similar_idx = torch.max(similarities, dim=0)
 
         # Return most similar index
-        return most_similar_idx
+        return most_similar_idx.item(), max_similarity.item()
         
     def get_template_results(self, detections, most_similar_idx, img_size):
         # Get the segmentation mask
@@ -169,23 +265,11 @@ class SOD:
         return batched_tensor
 
     def extract_features(self, image):
+        img = self.img_transform(image).half()
         # Extract a 512 feature vector from the image using a pretrained RESNET18 model
-        features = self.resnet(self.resnet_transform(image))
+        features = self.features(img)
+        
         return features
-    
-    def biternion2deg(self, biternion, use_rad = True):
-        rad = torch.atan2(biternion[:, 1], biternion[:, 0])
-        if use_rad:
-             return rad[0]
-        else:
-            return np.rad2deg(rad)[0]
-
-    def biternion2deg_numpy(self, biternion, use_rad = True):
-        rad = np.arctan2(biternion[:, 1], biternion[:, 0])
-        if use_rad:
-             return rad[0]
-        else:
-            return np.rad2deg(rad)[0]
 
     def get_person_pose(self, pcd): # 3d person pose estimation wrt the camera reference frame
         # Wrap the person around a 3D bounding box
@@ -202,24 +286,9 @@ class SOD:
         # Create a point cloud from the depth image
         pcd = o3d.geometry.PointCloud.create_from_depth_image(depth_o3d, self.intrinsics)
 
+        # Downsample pcl
+        downsampled_pcl = pcd.voxel_down_sample(voxel_size=0.05)
+
         # Remove person pcl outliers 
         self.person_pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=10, std_ratio=0.1)
-
-
-    def yaw_to_quaternion(self, yaw):
-        """
-        Convert a yaw angle (in radians) to a quaternion.
-
-        Parameters:
-        yaw (float): The yaw angle in radians.
-
-        Returns:
-        np.ndarray: The quaternion [w, x, y, z].
-        """
-        half_yaw = yaw / 2.0
-        qw = np.cos(half_yaw)
-        qx = 0.0
-        qy = 0.0
-        qz = np.sin(half_yaw)
-        
-        return (qx, qy, qz, qw)
+        self.person_pcd = downsampled_pcl

@@ -6,7 +6,7 @@ from launch.actions import ExecuteProcess
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-    rosbag_path = '/home/enrique/rosbags/test_ros2'  # Replace with the actual path to your rosbag file
+    rosbag_path = '/home/enrique/rosbags/enrique'  # Replace with the actual path to your rosbag file
     rviz_config_file = os.path.join(get_package_share_directory('person_detection_temi'), 'rviz', 'config.rviz')
 
     return LaunchDescription([
@@ -25,8 +25,8 @@ def generate_launch_description():
             arguments=['-d', rviz_config_file]
         ),
         # Start playing the rosbag
-        ExecuteProcess(
-            cmd=['ros2', 'bag', 'play', rosbag_path, '--loop', '--rate', '0.5'],
-            output='screen'
-        ),
+        # ExecuteProcess(
+        #     cmd=['ros2', 'bag', 'play', rosbag_path, '--loop', '--rate', '0.5'],
+        #     output='screen'
+        # ),
     ])
