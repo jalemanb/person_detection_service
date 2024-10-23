@@ -6,13 +6,13 @@ import torch, cv2
 import os, time
 from person_detection_temi.submodules.utils.preprocessing import preprocess_rgb, preprocess_depth
 import numpy as np
-import open3d as o3d
 import torchvision.transforms as transforms
 import torchreid
+from monoloco.network import Loco
 
 class SOD:
 
-    def __init__(self, yolo_model_path, feature_extracture_model_path) -> None:
+    def __init__(self, yolo_model_path, feature_extracture_model_path, orientation_model = None) -> None:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.onnx_provider = 'CUDAExecutionProvider' if torch.cuda.is_available() else 'CPUExecutionProvider'
@@ -21,13 +21,14 @@ class SOD:
         self.yolo = YOLO(yolo_model_path, task="segment_pose")  # load a pretrained model (recommended for training)
 
         self.features = torchreid.models.build_model(
-            name='osnet_ain_x1_0',
-            num_classes=1000,  # You can set num_classes to your number of classes, if using for training.
+            name='osnet_x0_25',
+            num_classes=1,
             pretrained=True  # Set to False if you want an untrained model
         )
 
+        torchreid.utils.load_pretrained_weights(self.features, feature_extracture_model_path) 
         self.features.eval()
-        self.features.eval().half()
+        self.features.half()
         self.features.to(self.device)
 
         self.template = None
@@ -35,15 +36,26 @@ class SOD:
         
         self.img_transform = transforms.Compose([
             transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean=[0., 0., 0.],  std=[1, 1, 1])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],  std=[0.229, 0.224, 0.225])
         ])
 
         self.fx, self.fy, self.cx, self.cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
         # fx, fy, cx, cy = 384.20147705078125, 384.20147705078125, 324.1680908203125, 245.62278747558594  # Depth Camera Intrinsics
 
+        self.kk = [[self.fx, 0., self.cx],
+                   [0., self.fy, self.cy],
+                   [0., 0., 1.]]
+        
         width, height = 640, 480
 
-        self.intrinsics = o3d.camera.PinholeCameraIntrinsic()
+        if orientation_model is not None:
+
+            self.loco = Loco(
+                    model=orientation_model,
+                    mode='mono',
+                    device=self.device,
+                    n_dropout=0,
+                    p_dropout=0)
 
 
         self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
@@ -63,12 +75,20 @@ class SOD:
         subimages = []
         person_kpts = []
         bboxes = []
+        orientations = []
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
             masks = result.masks
             keypoints = result.keypoints
-            for box, mask, kpts in zip(boxes, masks, keypoints.xy):
+
+            # loco_output = self.loco.forward(keypoints=keypoints.data.permute(0, 2, 1).tolist(), kk=self.kk)            
+
+            for i ,(box, mask, kpts) in enumerate(zip(boxes, masks, keypoints.xy)):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                # yaw_pred = loco_output['yaw'][0][i, 0].item()
+                # yaw_ego = loco_output['yaw'][1][i, 0].item()
+                yaw_pred = 0.
+                yaw_ego = 0.
                 
                 # Masking the original RGB image
                 contour = mask.xy.pop().astype(np.int32).reshape(-1, 1, 2)
@@ -89,14 +109,16 @@ class SOD:
                 subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
                 bboxes.append((x1, y1, x2, y2))
                 person_kpts.append(torso_kpts)
+                orientations.append(yaw_pred)
 
         batched_tensor = torch.cat(subimages).to(device=self.device)
-        return [batched_tensor, bboxes, person_kpts]
+        return [batched_tensor, bboxes, person_kpts, orientations]
 
 
     def detect(self, img_rgb, img_depth, detection_thr=0.7, detection_class=0):
+
         if self.template is None:
-            return False, False, False, False
+            return None
 
         total_execution_time = 0  # To accumulate total time
 
@@ -109,9 +131,9 @@ class SOD:
         total_execution_time += masked_detections_time
 
         if not (len(detections) > 0):
-            return False, False, False, False
+            return None
 
-        detections_imgs, bboxes, kpts = detections
+        detections_imgs, bboxes, kpts, orientations = detections
 
         # Measure time for `feature_extraction`
         start_time = time.time()
@@ -130,10 +152,7 @@ class SOD:
         total_execution_time += similarity_check_time
 
         if most_similar_idx is None:
-            return False, False, False, False
-
-        bbox = bboxes[most_similar_idx]
-
+            return None
 
         # Measure time for `get_person_pose`
 
@@ -144,11 +163,14 @@ class SOD:
         print(f"get_person_pose execution time: {get_person_pose_time:.2f} ms")
         total_execution_time += get_person_pose_time
 
+        if person_pose is None:
+            return None
+
         # Print total execution time
         print(f"Total execution time: {total_execution_time:.2f} ms")
 
         # Return results
-        return person_pose, bbox, kpts[most_similar_idx], max_similarity
+        return (person_pose, bboxes[most_similar_idx], kpts[most_similar_idx], max_similarity, self.yaw_to_quaternion(orientations[most_similar_idx]))
     
     def detect_mot(self, img, detection_class):
         # Run multiple object detection with a given desired class
@@ -224,7 +246,7 @@ class SOD:
         # Wrap the person around a 3D bounding box
 
         if kpts.shape[0] < 2: # Not Enough Detected Keypoints proceed to compute the human pose
-            return False
+            return None
         
         u = kpts[:, 0]
 
@@ -238,3 +260,18 @@ class SOD:
 
         return (x.mean(), y.mean(), z.mean())
         
+    def yaw_to_quaternion(self, yaw):
+        """
+        Convert a yaw angle (in radians) to a quaternion.
+        Parameters:
+        yaw (float): The yaw angle in radians.
+        Returns:
+        np.ndarray: The quaternion [w, x, y, z].
+        """
+        half_yaw = yaw / 2.0
+        qw = np.cos(half_yaw)
+        qx = 0.0
+        qy = 0.0
+        qz = np.sin(half_yaw)
+        
+        return (qx, qy, qz, qw)

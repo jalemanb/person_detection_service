@@ -8,10 +8,6 @@ from tf2_ros import TransformBroadcaster
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
-import open3d as o3d
-from sensor_msgs.msg import PointCloud2, PointField
-import sensor_msgs_py.point_cloud2 as pcl2
-from std_msgs.msg import Header
 import torch 
 from person_detection_temi.submodules.SOD import SOD
 import os
@@ -47,14 +43,15 @@ class HumanPoseEstimationNode(Node):
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
         yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
-        resnet_path = os.path.join(pkg_shared_dir, 'models', 'resnet50_market1501_aicity156.onnx')
-
+        resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
+        monoloco_path =  os.path.join(pkg_shared_dir, 'models', 'monoloco_pp-201207-1350.pkl')
+        
         # Loading Template IMG
         template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb.png')
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, resnet_path)
+        self.model = SOD(yolo_path, resnet_path, monoloco_path)
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 
@@ -99,23 +96,32 @@ class HumanPoseEstimationNode(Node):
 
         start_time = time.time()
         ############################
-        person_pose, bbox, kpts, conf = self.model.detect(rgb_image, depth_image, detection_thr = 0.3)
+        results = self.model.detect(rgb_image, depth_image, detection_thr = 0.3)
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
+            
         self.get_logger().warning(f"Model Inference Time: {execution_time} ms")
-        self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
-        if person_pose is not False:
+        if results is not None:
             self.draw_box = True
+
+            person_pose, bbox, kpts, conf, orientation = results
+            self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
             # Generate and publish the point cloud
             if self.publisher_pointcloud.get_subscription_count() > 0:
                 self.get_logger().warning('Publishing Person Pose that belongs to the desired Human')
-                self.broadcast_human_pose(person_pose, [0., 0., 0., 1.])
+                composed_orientation = self.combined_rotation * R.from_quat(orientation)
+                # composed_orientation = R.from_quat(orientation)
 
+                self.broadcast_human_pose(person_pose, composed_orientation.as_quat())
+                self.publish_human_pose(person_pose, composed_orientation.as_quat())
         else:
             self.draw_box = False
+            bbox = None
+            kpts = False
+            conf = 0.
 
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
@@ -129,7 +135,7 @@ class HumanPoseEstimationNode(Node):
             self.publish_debug_img(rgb_image, bbox, kpts = kpts, compressed=False, draw_box=self.draw_box, conf = conf)
 
 
-    def publish_debug_img(self, rgb_img, box, kpts = False, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.75):
+    def publish_debug_img(self, rgb_img, box, kpts = False, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.8):
         color_kpts = (255, 0, 0) 
         radius_kpts = 10
         thickness = 2
