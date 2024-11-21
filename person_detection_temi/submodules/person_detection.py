@@ -3,8 +3,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, PointCloud2
 from realsense2_camera_msgs.msg import RGBD
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
-from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import Pose, TransformStamped, PoseArray
+from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
@@ -24,14 +24,15 @@ class HumanPoseEstimationNode(Node):
         self.rgbd_subscription
 
         # Create publishers
-        self.publisher_human_pose = self.create_publisher(PoseWithCovarianceStamped, '/human_pose', 10)
-        self.publisher_pointcloud = self.create_publisher(PointCloud2, '/human_pointcloud', 10)
+        self.publisher_human_pose = self.create_publisher(PoseArray, '/detections', 10)
         self.publisher_debug_detection_image_compressed = self.create_publisher(CompressedImage, '/human_detection_debug/compressed/human_detected', 10)
         self.publisher_debug_detection_image = self.create_publisher(Image, '/human_detection_debug/human_detected', 10)
 
         # Create a TransformBroadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
-
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        
         # Bridge to convert ROS messages to OpenCV
         self.cv_bridge = CvBridge()
 
@@ -44,14 +45,13 @@ class HumanPoseEstimationNode(Node):
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
         yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
         resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
-        monoloco_path =  os.path.join(pkg_shared_dir, 'models', 'monoloco_pp-201207-1350.pkl')
         
         # Loading Template IMG
         template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb.png')
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, resnet_path, monoloco_path)
+        self.model = SOD(yolo_path, resnet_path)
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 
@@ -106,75 +106,121 @@ class HumanPoseEstimationNode(Node):
         if results is not None:
             self.draw_box = True
 
-            person_pose, bbox, kpts, conf, orientation = results
+            person_poses, bbox, kpts, conf, target_idx = results
             self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
+            person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
+
+            print("person_poses", person_poses)
+
             # Generate and publish the point cloud
-            if self.publisher_pointcloud.get_subscription_count() > 0:
+            if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
                 self.get_logger().warning('Publishing Person Pose that belongs to the desired Human')
-                composed_orientation = self.combined_rotation * R.from_quat(orientation)
-                # composed_orientation = R.from_quat(orientation)
+                # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
+                self.publish_human_pose(person_poses, [0., 0., 0., 1.], "base_link")
 
-                self.broadcast_human_pose(person_pose, composed_orientation.as_quat())
-                self.publish_human_pose(person_pose, composed_orientation.as_quat())
-        else:
-            self.draw_box = False
-            bbox = None
-            kpts = False
-            conf = 0.
+    #     # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
+    #     if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
+    #         self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
+    #         self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=True, draw_box=self.draw_box, conf = conf)
 
-
-        # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
-        if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
-            self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, compressed=True, draw_box=self.draw_box, conf = conf)
-
-        #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
-        if self.publisher_debug_detection_image.get_subscription_count() > 0:
-            self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, compressed=False, draw_box=self.draw_box, conf = conf)
+    #     #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
+    #     if self.publisher_debug_detection_image.get_subscription_count() > 0:
+    #         self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
+    #         self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=False, draw_box=self.draw_box, conf = conf)
 
 
-    def publish_debug_img(self, rgb_img, box, kpts = False, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.8):
-        color_kpts = (255, 0, 0) 
-        radius_kpts = 10
-        thickness = 2
-        if draw_box:
-            x1, y1, x2, y2 = box
-            if conf > conf_thr:
-                cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-            else:
-                cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    # def publish_debug_img(self, rgb_img, boxes, kpts, target_idx, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.8):
+    #     color_kpts = (255, 0, 0) 
+    #     radius_kpts = 10
+    #     thickness = 2
+    #     if draw_box:
+    #         for i, box in enumerate(boxes):
+    #             x1, y1, x2, y2 = box
 
-                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
+    #             # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    #             cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
 
-        if kpts is not False:
-            for i in range(kpts.shape[0]):
-                u = kpts[i, 0]
-                v = kpts[i, 1]
-                cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+    #             # if i == target_idx and conf < 600.:
+    #             if i == target_idx and conf > 0.7:
 
-        if compressed:
-            self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
-        else:
-            self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
+    #                 alpha = 0.2
+    #                 overlay = rgb_img.copy()
+    #                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+    #                 cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
+    #                 cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
 
-    def publish_human_pose(self, pose, orientation):
+    #             # if conf > conf_thr:
+    #             #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    #             #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+    #             # else:
+    #             #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    #             #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
+
+    #     for kpt in kpts:
+    #         for i in range(kpt.shape[0]):
+    #             u = kpt[i, 0]
+    #             v = kpt[i, 1]
+    #             cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+
+    #     if compressed:
+    #         self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
+    #     else:
+    #         self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
+
+
+    def publish_human_pose(self, poses, orientation, frame_id):
+
         # Publish the pose with covariance
-        pose_msg = PoseWithCovarianceStamped()
-        pose_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_msg.header.frame_id = self.frame_id
-        pose_msg.pose.pose.position.x = pose[0]
-        pose_msg.pose.pose.position.y = pose[1]
-        pose_msg.pose.pose.position.z = pose[2]
-        # Set the rotation using the composed quaternion
-        pose_msg.pose.pose.orientation.x = orientation[0]
-        pose_msg.pose.pose.orientation.y = orientation[1]
-        pose_msg.pose.pose.orientation.z = orientation[2]
-        pose_msg.pose.pose.orientation.w = orientation[3]
-        self.publisher_human_pose.publish(pose_msg)
+        pose_array_msg = PoseArray()
+        pose_array_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_array_msg.header.frame_id = frame_id
+
+        for pose in poses:
+            pose_msg = Pose()
+            # Set the rotation using the composed quaternion
+            pose_msg.position.x = pose[0]
+            pose_msg.position.y = pose[1]
+            pose_msg.position.z = 0.
+            # Set the rotation using the composed quaternion
+            pose_msg.orientation.x = 0.
+            pose_msg.orientation.y = 0.
+            pose_msg.orientation.z = 0.
+            pose_msg.orientation.w = 1.
+            # Create the pose Array
+            pose_array_msg.poses.append(pose_msg)
+
+        self.publisher_human_pose.publish(pose_array_msg)
+
+
+    def convert_to_frame(self, poses, from_frame = 'source_frame', to_frame = 'base_link'):
+        
+        # Delete rows that contain -100 values in the columns (invalid pose)
+        rows_to_delete = np.all(poses == -100, axis=1)
+        poses = poses[~rows_to_delete]
+
+        if len(poses) == 0:
+            return None
+
+        transform = self.tf_buffer.lookup_transform(to_frame, from_frame, rclpy.time.Time())
+
+        # Extract translation and rotation
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+
+        # Convert quaternion to rotation matrix
+        quaternion = [rotation.x, rotation.y, rotation.z, rotation.w]
+        rotation_matrix = R.from_quat(quaternion).as_matrix()
+
+        # Apply the rotation first
+        poses_rotated = rotation_matrix.dot(poses.T)
+
+        # Apply the translation (summation)
+        poses_transformed = poses_rotated + np.array([[translation.x], [translation.y], [translation.z]])
+
+        return poses_transformed.T.tolist()
+    
 
     def broadcast_human_pose(self, pose, orientation):
         # Broadcast the transform
@@ -190,6 +236,4 @@ class HumanPoseEstimationNode(Node):
         transform.transform.rotation.y = orientation[1]
         transform.transform.rotation.z = orientation[2]
         transform.transform.rotation.w = orientation[3]    
-        self.get_logger().warning(f"HAHHAHAHAHAHAA")    
         self.tf_broadcaster.sendTransform(transform)
-        self.get_logger().warning(f"HAHHAHAHAHAHAA")    

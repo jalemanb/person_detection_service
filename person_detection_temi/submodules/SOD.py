@@ -12,10 +12,9 @@ from monoloco.network import Loco
 
 class SOD:
 
-    def __init__(self, yolo_model_path, feature_extracture_model_path, orientation_model = None) -> None:
+    def __init__(self, yolo_model_path, feature_extracture_model_path) -> None:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.onnx_provider = 'CUDAExecutionProvider' if torch.cuda.is_available() else 'CPUExecutionProvider'
 
         # Detection Model
         self.yolo = YOLO(yolo_model_path, task="segment_pose")  # load a pretrained model (recommended for training)
@@ -40,7 +39,8 @@ class SOD:
         ])
 
         self.fx, self.fy, self.cx, self.cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
-        # fx, fy, cx, cy = 384.20147705078125, 384.20147705078125, 324.1680908203125, 245.62278747558594  # Depth Camera Intrinsics
+
+        self.fx, self.fy, self.cx, self.cy = 618.119349, 615.823749, 318.472087, 231.353083
 
         self.kk = [[self.fx, 0., self.cx],
                    [0., self.fy, self.cy],
@@ -48,24 +48,12 @@ class SOD:
         
         width, height = 640, 480
 
-        if orientation_model is not None:
-
-            self.loco = Loco(
-                    model=orientation_model,
-                    mode='mono',
-                    device=self.device,
-                    n_dropout=0,
-                    p_dropout=0)
-
-
         self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
 
-        
     def to(self, device):
         self.device = device
-        # self.resnet.to(device)
 
-    def masked_detections(self, img_rgb, detection_class = 0, size = (256, 256)):
+    def masked_detections(self, img_rgb, img_depth = None, detection_class = 0, size = (256, 128)):
 
         results = self.detect_mot(img_rgb, detection_class=detection_class)  
 
@@ -74,22 +62,16 @@ class SOD:
 
         subimages = []
         person_kpts = []
+        poses = []
         bboxes = []
-        orientations = []
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
             masks = result.masks
             keypoints = result.keypoints
 
-            # loco_output = self.loco.forward(keypoints=keypoints.data.permute(0, 2, 1).tolist(), kk=self.kk)            
-
             for i ,(box, mask, kpts) in enumerate(zip(boxes, masks, keypoints.xy)):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                # yaw_pred = loco_output['yaw'][0][i, 0].item()
-                # yaw_ego = loco_output['yaw'][1][i, 0].item()
-                yaw_pred = 0.
-                yaw_ego = 0.
-                
+
                 # Masking the original RGB image
                 contour = mask.xy.pop().astype(np.int32).reshape(-1, 1, 2)
                 b_mask = np.zeros(img_rgb.shape[:2], np.uint8)
@@ -105,15 +87,19 @@ class SOD:
                 torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
                 torso_kpts = np.array([kp for kp in torso_kpts if b_mask[kp[1], kp[0]] > 0])
 
+                # Getting the Person Central Pose (Based on Torso Keypoints)
+                pose = self.get_person_pose(torso_kpts, img_depth)
+
                 # Store all the bounding box detections and subimages in a tensor
                 subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
                 bboxes.append((x1, y1, x2, y2))
                 person_kpts.append(torso_kpts)
-                orientations.append(yaw_pred)
+                poses.append(pose)
 
+        poses = np.array(poses)
+        bboxes = np.array(bboxes)
         batched_tensor = torch.cat(subimages).to(device=self.device)
-        return [batched_tensor, bboxes, person_kpts, orientations]
-
+        return [batched_tensor, bboxes, person_kpts, poses]
 
     def detect(self, img_rgb, img_depth, detection_thr=0.7, detection_class=0):
 
@@ -124,7 +110,7 @@ class SOD:
 
         # Measure time for `masked_detections`
         start_time = time.time()
-        detections = self.masked_detections(img_rgb, detection_class=detection_class)
+        detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class)
         end_time = time.time()
         masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
         print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -133,7 +119,7 @@ class SOD:
         if not (len(detections) > 0):
             return None
 
-        detections_imgs, bboxes, kpts, orientations = detections
+        detections_imgs, bboxes, kpts, poses = detections
 
         # Measure time for `feature_extraction`
         start_time = time.time()
@@ -145,32 +131,68 @@ class SOD:
 
         # Measure time for `similarity_check`
         start_time = time.time()
-        most_similar_idx, max_similarity = self.similarity_check(self.template_features, detections_features, detection_thr)
+        similarity_check = self.similarity_check(self.template_features, detections_features, 0.8, 500, 0.4)
         end_time = time.time()
         similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
         print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
         total_execution_time += similarity_check_time
 
-        if most_similar_idx is None:
+        if similarity_check is None:
             return None
-
-        # Measure time for `get_person_pose`
-
-        start_time = time.time()
-        person_pose = self.get_person_pose(kpts[most_similar_idx], img_depth)
-        end_time = time.time()
-        get_person_pose_time = (end_time - start_time) * 1000  # Convert to milliseconds
-        print(f"get_person_pose execution time: {get_person_pose_time:.2f} ms")
-        total_execution_time += get_person_pose_time
-
-        if person_pose is None:
-            return None
-
-        # Print total execution time
-        print(f"Total execution time: {total_execution_time:.2f} ms")
+        else:
+            valid_idxs, similarity = similarity_check
 
         # Return results
-        return (person_pose, bboxes[most_similar_idx], kpts[most_similar_idx], max_similarity, self.yaw_to_quaternion(orientations[most_similar_idx]))
+        return (poses[valid_idxs], bboxes[valid_idxs], kpts, similarity, valid_idxs[0])
+    
+    def similarity_check(self, template_features, detections_features, similarity_thr, eucledian_thr, ratio_thr):
+
+        # In case of Just one person being detected
+        if detections_features.shape[0] == 1:
+            similarity = self.feature_distance(template_features, detections_features, mode='eucledian')
+            
+            print("Single Target Detected Waht to do:")
+            print( self.feature_distance(template_features, detections_features, mode='eucledian'))
+
+            similarity = similarity.item()
+
+            if similarity > eucledian_thr:
+                return None
+            else:
+                valid_indices = [0]
+
+        # In case of multiple detections
+        elif detections_features.shape[0] > 1:
+
+            # Just cionsider features that have a cosine similarity score greater than 0.8
+            similarities = self.feature_distance(template_features, detections_features, mode='cosine')
+
+            filtered_detection_features = detections_features[similarities > similarity_thr]
+        
+            if filtered_detection_features.shape[0] < 1:
+                return None
+
+            distances = self.feature_distance(template_features, filtered_detection_features, mode='eucledian')
+
+            # Set Lowe's ratio threshold
+            k = min(5, distances.shape[1])  # Number of top smallest distances to consider
+
+            # Get the top k smallest distances and their indices
+            top_k_values, top_k_indices = torch.topk(distances, k, largest=False)
+            ratios = 1 - (top_k_values[0, 0] / top_k_values )
+
+            # Filter indices where the ratio is below the threshold, excluding the smallest itself
+            valid_indices = top_k_indices[ratios < ratio_thr].tolist()
+            filtered_distances = top_k_values[ratios < ratio_thr]
+            
+            if filtered_distances.shape[0] == 1:
+                similarity = filtered_distances
+            elif filtered_distances.shape[0] > 1:
+                similarity = filtered_distances[1]
+
+            print("filtered_distances", filtered_distances)
+
+        return (valid_indices, similarity)
     
     def detect_mot(self, img, detection_class):
         # Run multiple object detection with a given desired class
@@ -203,16 +225,16 @@ class SOD:
         # Return Target Images With no background of the target person for orientation estimation
         return masked_depth_img, masked_rgb_img
 
-    def similarity_check(self, template_features, detections_features, detection_thr):
+    def feature_distance(self, template_features, detections_features, mode = 'cosine'):
 
         # Compute Similarity Check
-        similarities = F.cosine_similarity(template_features, detections_features, dim=1)
-
-        # FInd most similar image
-        max_similarity, most_similar_idx = torch.max(similarities, dim=0)
+        if mode == 'cosine':
+            L = F.cosine_similarity(template_features, detections_features, dim=1)
+        elif mode == 'eucledian':
+            L = torch.cdist(template_features.to(torch.float32), detections_features.to(torch.float32), p=2)
 
         # Return most similar index
-        return most_similar_idx.item(), max_similarity.item()
+        return L
         
     def get_template_results(self, detections, most_similar_idx, img_size):
         # Get the segmentation mask
@@ -245,8 +267,11 @@ class SOD:
     def get_person_pose(self, kpts, depth_img): # 3d person pose estimation wrt the camera reference frame
         # Wrap the person around a 3D bounding box
 
-        if kpts.shape[0] < 2: # Not Enough Detected Keypoints proceed to compute the human pose
+        if depth_img is None:
             return None
+
+        if kpts.shape[0] < 2: # Not Enough Detected Keypoints proceed to compute the human pose
+            return [-100., -100., -100.]
         
         u = kpts[:, 0]
 
@@ -256,9 +281,9 @@ class SOD:
 
         x = z*(u - self.cx)/self.fx
 
-        y = -z*(u - self.cy)/self.fy
+        y = -z*(v - self.cy)/self.fy
 
-        return (x.mean(), y.mean(), z.mean())
+        return [x.mean(), y.mean(), z.mean()]
         
     def yaw_to_quaternion(self, yaw):
         """
