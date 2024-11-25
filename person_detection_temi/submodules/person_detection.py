@@ -33,7 +33,7 @@ class HumanPoseEstimationNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
-        # Bridge to convert ROS messages to OpenCV
+        # Bridge to convert ROS messages to OpenCV 
         self.cv_bridge = CvBridge()
 
         self.draw_box = False
@@ -44,6 +44,7 @@ class HumanPoseEstimationNode(Node):
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
         yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
+        tracker_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
         resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
         
         # Loading Template IMG
@@ -51,7 +52,7 @@ class HumanPoseEstimationNode(Node):
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, resnet_path)
+        self.model = SOD(yolo_path, resnet_path, tracker_path)
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 
@@ -103,10 +104,18 @@ class HumanPoseEstimationNode(Node):
             
         self.get_logger().warning(f"Model Inference Time: {execution_time} ms")
 
+        person_poses = []
+        bbox = []
+        kpts = []
+        conf = []
+        tracked_ids = []
+        target_idx = 0 
+        conf = 0
+
         if results is not None:
             self.draw_box = True
 
-            person_poses, bbox, kpts, conf, target_idx = results
+            person_poses, bbox, kpts, tracked_ids, conf, target_idx = results
             self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
             person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
@@ -119,55 +128,59 @@ class HumanPoseEstimationNode(Node):
                 # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
                 self.publish_human_pose(person_poses, [0., 0., 0., 1.], "base_link")
 
-    #     # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
-    #     if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
-    #         self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
-    #         self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=True, draw_box=self.draw_box, conf = conf)
+        # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
+        if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
+            self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=True, conf = conf)
 
-    #     #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
-    #     if self.publisher_debug_detection_image.get_subscription_count() > 0:
-    #         self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
-    #         self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=False, draw_box=self.draw_box, conf = conf)
-
-
-    # def publish_debug_img(self, rgb_img, boxes, kpts, target_idx, compressed = True, draw_box = True, conf = 0.5, conf_thr = 0.8):
-    #     color_kpts = (255, 0, 0) 
-    #     radius_kpts = 10
-    #     thickness = 2
-    #     if draw_box:
-    #         for i, box in enumerate(boxes):
-    #             x1, y1, x2, y2 = box
-
-    #             # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-    #             cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-
-    #             # if i == target_idx and conf < 600.:
-    #             if i == target_idx and conf > 0.7:
-
-    #                 alpha = 0.2
-    #                 overlay = rgb_img.copy()
-    #                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
-    #                 cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
-    #                 cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
+        if self.publisher_debug_detection_image.get_subscription_count() > 0:
+            self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, tracked_ids = tracked_ids, compressed=False, conf = conf)
 
 
-    #             # if conf > conf_thr:
-    #             #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-    #             #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-    #             # else:
-    #             #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-    #             #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
+    def publish_debug_img(self, rgb_img, boxes, kpts, tracked_ids, target_idx, compressed = True, conf = 0.5):
+        color_kpts = (255, 0, 0) 
+        radius_kpts = 10
+        thickness = 2
 
-    #     for kpt in kpts:
-    #         for i in range(kpt.shape[0]):
-    #             u = kpt[i, 0]
-    #             v = kpt[i, 1]
-    #             cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+        if len(boxes) > 0 and len(kpts) > 0:
 
-    #     if compressed:
-    #         self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
-    #     else:
-    #         self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box
+
+                # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+                # if i == target_idx and conf < 600.:
+                # if i == target_idx and conf > 0.7:
+
+                #     alpha = 0.2
+                #     overlay = rgb_img.copy()
+                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                #     cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
+                #     cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+                # if conf > conf_thr:
+                #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+                # else:
+                #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
+            
+            for kpt in kpts:
+                for i in range(kpt.shape[0]):
+                    u = kpt[i, 0]
+                    v = kpt[i, 1]
+                    cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+
+
+        if compressed:
+            self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
+        else:
+            self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
 
 
     def publish_human_pose(self, poses, orientation, frame_id):

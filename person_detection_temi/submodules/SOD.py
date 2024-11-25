@@ -8,13 +8,17 @@ from person_detection_temi.submodules.utils.preprocessing import preprocess_rgb,
 import numpy as np
 import torchvision.transforms as transforms
 import torchreid
-from monoloco.network import Loco
+
+from person_detection_temi.submodules.super_reid.keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
+from person_detection_temi.submodules.super_reid.kpr_reid import KPR
 
 class SOD:
 
-    def __init__(self, yolo_model_path, feature_extracture_model_path) -> None:
+    def __init__(self, yolo_model_path, feature_extracture_model_path, tracker_system_path) -> None:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.tracker_file = tracker_system_path
 
         # Detection Model
         self.yolo = YOLO(yolo_model_path, task="segment_pose")  # load a pretrained model (recommended for training)
@@ -53,9 +57,9 @@ class SOD:
     def to(self, device):
         self.device = device
 
-    def masked_detections(self, img_rgb, img_depth = None, detection_class = 0, size = (256, 128)):
+    def masked_detections(self, img_rgb, img_depth = None, detection_class = 0, size = (256, 128), track = False):
 
-        results = self.detect_mot(img_rgb, detection_class=detection_class)  
+        results = self.detect_mot(img_rgb, detection_class=detection_class, track = track)  
 
         if not (len(results[0].boxes) > 0):
             return []
@@ -64,6 +68,7 @@ class SOD:
         person_kpts = []
         poses = []
         bboxes = []
+        track_ids = []
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
             masks = result.masks
@@ -71,7 +76,7 @@ class SOD:
 
             for i ,(box, mask, kpts) in enumerate(zip(boxes, masks, keypoints.xy)):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-
+                track_id = -1 if box.id is None else box.id.int().cpu().item()
                 # Masking the original RGB image
                 contour = mask.xy.pop().astype(np.int32).reshape(-1, 1, 2)
                 b_mask = np.zeros(img_rgb.shape[:2], np.uint8)
@@ -81,25 +86,25 @@ class SOD:
                 mask3ch = cv2.bitwise_and(img_rgb, img_rgb, mask=b_mask)
                 # Crop the Image
                 subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
-
+                # All the keypoints detected for using a reid system
+                keypoints = kpts.cpu().numpy()
                 # Getting Eyes+Torso+knees Keypoints for pose estimation
-                torso_kpts = kpts.cpu().numpy()[[1, 2, 5, 6, 11, 12, 13, 14], :]
+                torso_kpts = keypoints[[1, 2, 5, 6, 11, 12, 13, 14], :]
                 torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
                 torso_kpts = np.array([kp for kp in torso_kpts if b_mask[kp[1], kp[0]] > 0])
-
                 # Getting the Person Central Pose (Based on Torso Keypoints)
                 pose = self.get_person_pose(torso_kpts, img_depth)
-
                 # Store all the bounding box detections and subimages in a tensor
                 subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
                 bboxes.append((x1, y1, x2, y2))
+                track_ids.append(track_id)
                 person_kpts.append(torso_kpts)
                 poses.append(pose)
 
         poses = np.array(poses)
         bboxes = np.array(bboxes)
         batched_tensor = torch.cat(subimages).to(device=self.device)
-        return [batched_tensor, bboxes, person_kpts, poses]
+        return [batched_tensor, bboxes, person_kpts, poses, track_ids]
 
     def detect(self, img_rgb, img_depth, detection_thr=0.7, detection_class=0):
 
@@ -119,7 +124,7 @@ class SOD:
         if not (len(detections) > 0):
             return None
 
-        detections_imgs, bboxes, kpts, poses = detections
+        detections_imgs, bboxes, kpts, poses, track_ids = detections
 
         # Measure time for `feature_extraction`
         start_time = time.time()
@@ -143,16 +148,13 @@ class SOD:
             valid_idxs, similarity = similarity_check
 
         # Return results
-        return (poses[valid_idxs], bboxes[valid_idxs], kpts, similarity, valid_idxs[0])
+        return (poses, bboxes, kpts, track_ids, similarity, valid_idxs)
     
     def similarity_check(self, template_features, detections_features, similarity_thr, eucledian_thr, ratio_thr):
 
         # In case of Just one person being detected
         if detections_features.shape[0] == 1:
             similarity = self.feature_distance(template_features, detections_features, mode='eucledian')
-            
-            print("Single Target Detected Waht to do:")
-            print( self.feature_distance(template_features, detections_features, mode='eucledian'))
 
             similarity = similarity.item()
 
@@ -194,13 +196,18 @@ class SOD:
 
         return (valid_indices, similarity)
     
-    def detect_mot(self, img, detection_class):
+    def detect_mot(self, img, detection_class, track = False):
         # Run multiple object detection with a given desired class
-        return self.yolo(img, classes = detection_class)
-    
+        if track:
+            return self.yolo.track(img, persist=True, classes = detection_class, tracker=self.tracker_file)
+        else:
+            return self.yolo(img, classes = detection_class)
+            
+
+
     def template_update(self, template):
 
-        detections = self.masked_detections(template)
+        detections = self.masked_detections(template, track=False)
 
         if len(detections):
             self.template = detections[0]
