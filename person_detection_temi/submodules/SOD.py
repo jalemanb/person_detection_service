@@ -73,6 +73,32 @@ def rescale_keypoints(rf_keypoints, size, new_size):
 
     return rf_keypoints
 
+def get_indices_and_values_as_lists(tensor, threshold):
+    """
+    Get the flattened indices and values of elements in a tensor smaller than a given threshold as Python lists.
+    
+    Args:
+        tensor (torch.Tensor): The input tensor of any shape.
+        threshold (float): The threshold value.
+    
+    Returns:
+        list, list: Flattened indices and values as Python lists.
+    """
+    # Create a boolean mask for elements smaller than the threshold
+    mask = tensor < threshold
+    
+    # Get the flattened indices of the elements that match the condition
+    valid_indices = torch.nonzero(mask.flatten(), as_tuple=False).squeeze(1)
+    
+    # Extract the corresponding values
+    values = tensor[mask]
+    
+    # Convert indices and values to Python lists
+    indices_list = valid_indices.tolist()
+    values_list = values.tolist()
+    
+    return indices_list, values_list
+
 class SOD:
 
     def __init__(self, yolo_model_path, feature_extracture_model_path, tracker_system_path) -> None:
@@ -136,8 +162,7 @@ class SOD:
                 b_mask = cv2.erode(b_mask, self.erosion_kernel, iterations=2)  # Apply erosion to the binary mask
                 mask3ch = cv2.bitwise_and(img_rgb, img_rgb, mask=b_mask)
                 # Crop the Image
-                subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
-                print(subimage.shape, "subimage shape")
+                subimage = cv2.resize(img_rgb[y1:y2, x1:x2], size)
                 # Getting Eyes+Torso+knees Keypoints for pose estimation
                 torso_kpts = kpts[:, :2].cpu().numpy()[[1, 2, 5, 6, 11, 12, 13, 14], :]
                 torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
@@ -157,6 +182,7 @@ class SOD:
 
         poses = np.array(poses)
         bboxes = np.array(bboxes)
+        track_ids = np.array(track_ids)
         batched_tensor = torch.cat(subimages).to(device=self.device)
         batched_kpts = torch.stack(total_keypoints, dim=0).to(device=self.device)
         return [batched_tensor, batched_kpts, bboxes, person_kpts, poses, track_ids]
@@ -191,7 +217,7 @@ class SOD:
 
         # Measure time for `similarity_check`
         start_time = time.time()
-        similarity_check = self.similarity_check(self.template_features, detections_features, 0.8)
+        similarity_check = self.similarity_check(self.template_features, detections_features, 1.0)
         end_time = time.time()
         similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
         print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
@@ -202,8 +228,11 @@ class SOD:
         else:
             valid_idxs, similarity = similarity_check
 
+        print("valid_idxs", valid_idxs)
+        print("similarity", similarity)
+
         # Return results
-        return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
+        return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
     
     def similarity_check(self, template_features, detections_features, similarity_thr):
 
@@ -212,16 +241,20 @@ class SOD:
         
         dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
 
-        min_d, min_idx = torch.min(dist, dim=1)
+        min_idx,  min_v = get_indices_and_values_as_lists(dist, similarity_thr)
 
-        return (min_idx.item(), min_d.item())
+        print("Distances", dist)
+
+        # min_d, min_idx = torch.min(dist, dim=1)
+
+        return (min_idx, min_v)
     
     def detect_mot(self, img, detection_class, track = False):
         # Run multiple object detection with a given desired class
         if track:
             return self.yolo.track(img, persist=True, classes = detection_class, tracker=self.tracker_file)
         else:
-            return self.yolo(img, classes = detection_class)
+            return self.yolo(img, classes = detection_class, conf = 0.8)
             
     def template_update(self, template):
 

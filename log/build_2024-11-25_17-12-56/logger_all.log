@@ -1,0 +1,91 @@
+[0.102s] [34mcolcon[0m [1;30mDEBUG[0m [32mCommand line arguments: ['/usr/bin/colcon', 'build', '--packages-select', 'person_detection_temi'][0m
+[0.102s] [34mcolcon[0m [1;30mDEBUG[0m [32mParsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='build', build_base='build', install_base='install', merge_install=False, symlink_install=False, test_result_base=None, continue_on_error=False, executor='parallel', parallel_workers=20, event_handlers=None, ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['.'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=['person_detection_temi'], packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, allow_overriding=[], cmake_args=None, cmake_target=None, cmake_target_skip_unavailable=False, cmake_clean_cache=False, cmake_clean_first=False, cmake_force_configure=False, ament_cmake_args=None, catkin_cmake_args=None, catkin_skip_building_tests=False, mixin_files=None, mixin=None, verb_parser=<colcon_mixin.mixin.mixin_argument.MixinArgumentDecorator object at 0x7b84ffdaf850>, verb_extension=<colcon_core.verb.build.BuildVerb object at 0x7b84ffdaf2b0>, main=<bound method BuildVerb.main of <colcon_core.verb.build.BuildVerb object at 0x7b84ffdaf2b0>>, mixin_verb=('build',))[0m
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) check parameters
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) check parameters
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) check parameters
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) check parameters
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) discover
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) discover
+[0.283s] [34mcolcon.colcon_core.package_discovery[0m [1;30mINFO[0m Crawling recursively for packages in '/home/enrique/vision_ws/src/person_detection_temi'
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ignore', 'ignore_ament_install']
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore'
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore_ament_install'
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_pkg']
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_pkg'
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_meta']
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_meta'
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ros']
+[0.283s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ros'
+[0.293s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage '.' with type 'ros.ament_python' and name 'person_detection_temi'[0m
+[0.293s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) using defaults
+[0.293s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) discover
+[0.293s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) using defaults
+[0.293s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) discover
+[0.293s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) using defaults
+[0.305s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) check parameters
+[0.305s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) discover
+[0.308s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 7 installed packages in /home/enrique/vision_ws/install[0m
+[0.310s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 126 installed packages in /home/enrique/colcon_ws/install[0m
+[0.311s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 289 installed packages in /opt/ros/rolling[0m
+[0.313s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) using defaults
+[0.341s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_args' from command line to 'None'
+[0.341s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_target' from command line to 'None'
+[0.341s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[0.341s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_clean_cache' from command line to 'False'
+[0.341s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_clean_first' from command line to 'False'
+[0.342s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'cmake_force_configure' from command line to 'False'
+[0.342s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'ament_cmake_args' from command line to 'None'
+[0.342s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'catkin_cmake_args' from command line to 'None'
+[0.342s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'person_detection_temi' build argument 'catkin_skip_building_tests' from command line to 'False'
+[0.342s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'person_detection_temi' with the following arguments: {'ament_cmake_args': None, 'build_base': '/home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi', 'merge_install': False, 'path': '/home/enrique/vision_ws/src/person_detection_temi', 'symlink_install': False, 'test_result_base': None}[0m
+[0.342s] [34mcolcon.colcon_core.executor[0m [1;30mINFO[0m Executing jobs using 'parallel' executor
+[0.342s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete[0m
+[0.343s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '/home/enrique/vision_ws/src/person_detection_temi' with build type 'ament_python'
+[0.343s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('person_detection_temi', 'ament_prefix_path')
+[0.345s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_core.shell.bat': Not used on non-Windows systems
+[0.345s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/ament_prefix_path.ps1'
+[0.345s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/ament_prefix_path.dsv'
+[0.345s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/ament_prefix_path.sh'
+[0.346s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[0.346s] [34mcolcon.colcon_core.shell[0m [1;30mDEBUG[0m [32mSkip shell extension 'dsv' for command environment[0m
+[0.992s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '/home/enrique/vision_ws/src/person_detection_temi'
+[0.992s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[0.992s] [34mcolcon.colcon_core.shell[0m [1;30mDEBUG[0m [32mSkip shell extension 'dsv' for command environment[0m
+[2.049s] [34mcolcon.colcon_core.event_handler.log_command[0m [1;30mDEBUG[0m [32mInvoking command in '/home/enrique/vision_ws/src/person_detection_temi': PYTHONPATH=/home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated setup.py egg_info --egg-base build/person_detection_temi build --build-base /home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/build install --record /home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/install.log --single-version-externally-managed install_data[0m
+[4.436s] [34mcolcon.colcon_core.event_handler.log_command[0m [1;30mDEBUG[0m [32mInvoked command in '/home/enrique/vision_ws/src/person_detection_temi' returned '0': PYTHONPATH=/home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated setup.py egg_info --egg-base build/person_detection_temi build --build-base /home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/build install --record /home/enrique/vision_ws/src/person_detection_temi/build/person_detection_temi/install.log --single-version-externally-managed install_data[0m
+[4.438s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi' for CMake module files
+[4.438s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi' for CMake config files
+[4.440s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/lib'
+[4.440s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/bin'
+[4.440s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/lib/pkgconfig/person_detection_temi.pc'
+[4.440s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/lib/python3.10/site-packages'
+[4.440s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('person_detection_temi', 'pythonpath')
+[4.440s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/pythonpath.ps1'
+[4.441s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/pythonpath.dsv'
+[4.441s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/hook/pythonpath.sh'
+[4.441s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/bin'
+[4.441s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m create_environment_scripts_only(person_detection_temi)
+[4.441s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/package.ps1'
+[4.442s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package descriptor '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/package.dsv'
+[4.442s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/package.sh'
+[4.442s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/package.bash'
+[4.443s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/person_detection_temi/package.zsh'
+[4.443s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m create_file_with_runtime_dependencies(/home/enrique/vision_ws/src/person_detection_temi/install/person_detection_temi/share/colcon-core/packages/person_detection_temi)
+[4.443s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mclosing loop[0m
+[4.443s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mloop closed[0m
+[4.443s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete finished with '0'[0m
+[4.444s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoining thread[0m
+[4.448s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_notification.desktop_notification.terminal_notifier': Not used on non-Darwin systems
+[4.448s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_notification.desktop_notification.win32': Not used on non-Windows systems
+[4.448s] [34mcolcon.colcon_notification.desktop_notification[0m [1;30mINFO[0m Sending desktop notification using 'notify2'
+[4.460s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoined thread[0m
+[4.460s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/enrique/vision_ws/src/person_detection_temi/install/local_setup.ps1'
+[4.461s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '/home/enrique/vision_ws/src/person_detection_temi/install/_local_setup_util_ps1.py'
+[4.462s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/enrique/vision_ws/src/person_detection_temi/install/setup.ps1'
+[4.465s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/enrique/vision_ws/src/person_detection_temi/install/local_setup.sh'
+[4.465s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '/home/enrique/vision_ws/src/person_detection_temi/install/_local_setup_util_sh.py'
+[4.466s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/enrique/vision_ws/src/person_detection_temi/install/setup.sh'
+[4.469s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/enrique/vision_ws/src/person_detection_temi/install/local_setup.bash'
+[4.469s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/enrique/vision_ws/src/person_detection_temi/install/setup.bash'
+[4.471s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/enrique/vision_ws/src/person_detection_temi/install/local_setup.zsh'
+[4.472s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/enrique/vision_ws/src/person_detection_temi/install/setup.zsh'

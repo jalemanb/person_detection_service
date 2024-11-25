@@ -108,14 +108,13 @@ class HumanPoseEstimationNode(Node):
         bbox = []
         kpts = []
         conf = []
+        valid_idxs = []
         tracked_ids = []
-        target_idx = 0 
-        conf = 0
 
         if results is not None:
             self.draw_box = True
 
-            person_poses, bbox, kpts, tracked_ids, conf, target_idx = results
+            person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
             self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
             person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
@@ -131,15 +130,15 @@ class HumanPoseEstimationNode(Node):
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
             self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, compressed=True, conf = conf)
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, compressed=True, conf = conf)
 
         #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image.get_subscription_count() > 0:
             self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, target_idx = target_idx, tracked_ids = tracked_ids, compressed=False, conf = conf)
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=False, conf = conf)
 
 
-    def publish_debug_img(self, rgb_img, boxes, kpts, tracked_ids, target_idx, compressed = True, conf = 0.5):
+    def publish_debug_img(self, rgb_img, boxes, kpts, valid_idxs, confidences, tracked_ids, compressed = True, conf = 0.5):
         color_kpts = (255, 0, 0) 
         radius_kpts = 10
         thickness = 2
@@ -151,16 +150,16 @@ class HumanPoseEstimationNode(Node):
 
                 # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                cv2.putText(rgb_img, f"ID: {tracked_ids[valid_idxs[i]]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
                 # if i == target_idx and conf < 600.:
-                if i == target_idx and conf < 0.8:
+                # if target_idx[i]: #and conf < 0.8:
 
-                    alpha = 0.2
-                    overlay = rgb_img.copy()
-                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
-                    cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
-                    cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                alpha = 0.2
+                overlay = rgb_img.copy()
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
+                cv2.putText(rgb_img, f"{confidences[i]:.2f}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
                 # if conf > conf_thr:
                 #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
@@ -169,11 +168,18 @@ class HumanPoseEstimationNode(Node):
                 #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
             
-            for kpt in kpts:
-                for i in range(kpt.shape[0]):
-                    u = kpt[i, 0]
-                    v = kpt[i, 1]
+                kpt = kpts[valid_idxs[i]]
+                for j in range(kpt.shape[0]):
+                    u = kpt[j, 0]
+                    v = kpt[j, 1]
                     cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+
+
+            # for kpt in kpts:
+            #     for i in range(kpt.shape[0]):
+            #         u = kpt[i, 0]
+            #         v = kpt[i, 1]
+            #         cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
 
 
         if compressed:
