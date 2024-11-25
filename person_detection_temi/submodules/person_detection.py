@@ -154,14 +154,13 @@ class HumanPoseEstimationNode(Node):
                 cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
                 # if i == target_idx and conf < 600.:
-                # if i == target_idx and conf > 0.7:
+                if i == target_idx and conf < 0.8:
 
-                #     alpha = 0.2
-                #     overlay = rgb_img.copy()
-                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
-                #     cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
-                #     cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
+                    alpha = 0.2
+                    overlay = rgb_img.copy()
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                    cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
+                    cv2.putText(rgb_img, f"{conf}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
                 # if conf > conf_thr:
                 #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)

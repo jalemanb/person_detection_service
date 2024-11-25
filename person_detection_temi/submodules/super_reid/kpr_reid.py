@@ -82,7 +82,7 @@ class KPR(object):
         prompts_list = []
         kpts_list = []
         for i in range(imgs.shape[0]):
-            kpts = self.clamp_kpts(kpts, imgs.shape[3], imgs.shape[2])
+            # kpts = self.clamp_kpts(kpts, imgs.shape[3], imgs.shape[2])
             sample = {"image":imgs[i, :, :, :].permute(1, 2, 0).cpu().numpy(), "keypoints_xyc":kpts[i, :, :].cpu().numpy(), "negative_kps":[]}
             preprocessed_sample = ImageDataset.getitem(
                             sample,
@@ -138,3 +138,4 @@ class KPR(object):
                                                          self.cfg.test.batch_size_pairwise_dist_matrix,
                                                          use_gpu = self.cfg.use_gpu,
                                                          metric = self.cfg.test.dist_metric,)
+    

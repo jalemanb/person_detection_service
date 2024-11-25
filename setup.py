@@ -2,8 +2,8 @@ from setuptools import find_packages, setup
 from glob import glob
 import os
 package_name = 'person_detection_temi'
-submodules = package_name + "/submodules"
-utils = package_name + "/submodules" +"/utils"
+# submodules = package_name + "/submodules"
+# utils = package_name + "/submodules" +"/utils"
 
 setup(
     name=package_name,
