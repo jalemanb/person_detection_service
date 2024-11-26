@@ -7,7 +7,6 @@ import os, time
 from person_detection_temi.submodules.utils.preprocessing import preprocess_rgb, preprocess_depth
 import numpy as np
 import torchvision.transforms as transforms
-import torchreid
 
 from person_detection_temi.submodules.super_reid.keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
 from person_detection_temi.submodules.super_reid.kpr_reid import KPR
@@ -217,7 +216,7 @@ class SOD:
 
         # Measure time for `similarity_check`
         start_time = time.time()
-        similarity_check = self.similarity_check(self.template_features, detections_features, 1.0)
+        similarity_check = self.similarity_check(self.template_features, detections_features, 0.75)
         end_time = time.time()
         similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
         print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
