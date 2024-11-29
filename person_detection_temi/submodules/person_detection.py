@@ -117,6 +117,8 @@ class HumanPoseEstimationNode(Node):
             person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
             self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
+            person_poses = person_poses[valid_idxs]
+
             person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
 
             print("person_poses", person_poses)
@@ -143,6 +145,8 @@ class HumanPoseEstimationNode(Node):
         radius_kpts = 10
         thickness = 2
 
+        print("confidences", confidences)
+
         if len(boxes) > 0 and len(kpts) > 0:
 
             for i, box in enumerate(boxes):
@@ -150,16 +154,17 @@ class HumanPoseEstimationNode(Node):
 
                 # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-                cv2.putText(rgb_img, f"ID: {tracked_ids[valid_idxs[i]]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
                 # if i == target_idx and conf < 600.:
                 # if target_idx[i]: #and conf < 0.8:
+                if i in valid_idxs:
+                    alpha = 0.2
+                    overlay = rgb_img.copy()
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                    cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
 
-                alpha = 0.2
-                overlay = rgb_img.copy()
-                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
-                cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
                 cv2.putText(rgb_img, f"{confidences[i]:.2f}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
                 # if conf > conf_thr:
                 #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
@@ -168,7 +173,7 @@ class HumanPoseEstimationNode(Node):
                 #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
             
-                kpt = kpts[valid_idxs[i]]
+                kpt = kpts[i]
                 for j in range(kpt.shape[0]):
                     u = kpt[j, 0]
                     v = kpt[j, 1]

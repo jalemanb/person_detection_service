@@ -11,6 +11,8 @@ import torchvision.transforms as transforms
 from person_detection_temi.submodules.super_reid.keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
 from person_detection_temi.submodules.super_reid.kpr_reid import KPR
 
+from OCL import MultiPartClassifier, MemoryManager
+
 def kp_img_to_kp_bbox(kp_xyc_img, bbox_xyxy):
     """
     Convert keypoints in image coordinates to bounding box coordinates and filter out keypoints 
@@ -195,7 +197,7 @@ class SOD:
 
         # Measure time for `masked_detections`
         start_time = time.time()
-        detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class)
+        detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = True)
         end_time = time.time()
         masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
         print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -231,8 +233,9 @@ class SOD:
         print("similarity", similarity)
 
         # Return results
-        return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
-    
+        #return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
+        return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
+
     def similarity_check(self, template_features, detections_features, similarity_thr):
 
         fq_, vq_ = template_features
@@ -242,16 +245,15 @@ class SOD:
 
         min_idx,  min_v = get_indices_and_values_as_lists(dist, similarity_thr)
 
-        print("Distances", dist)
 
         # min_d, min_idx = torch.min(dist, dim=1)
 
-        return (min_idx, min_v)
+        return (min_idx, dist[0].tolist())
     
     def detect_mot(self, img, detection_class, track = False):
         # Run multiple object detection with a given desired class
         if track:
-            return self.yolo.track(img, persist=True, classes = detection_class, tracker=self.tracker_file)
+            return self.yolo.track(img, persist=True, classes = detection_class, tracker=self.tracker_file, iou = 0.2, conf = 0.8)
         else:
             return self.yolo(img, classes = detection_class, conf = 0.8)
             
