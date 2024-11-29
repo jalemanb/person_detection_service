@@ -11,7 +11,7 @@ import torchvision.transforms as transforms
 from person_detection_temi.submodules.super_reid.keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
 from person_detection_temi.submodules.super_reid.kpr_reid import KPR
 
-from OCL import MultiPartClassifier, MemoryManager
+from person_detection_temi.submodules.OCL import MultiPartClassifier, MemoryManager
 
 def kp_img_to_kp_bbox(kp_xyc_img, bbox_xyxy):
     """
@@ -74,7 +74,7 @@ def rescale_keypoints(rf_keypoints, size, new_size):
 
     return rf_keypoints
 
-def get_indices_and_values_as_lists(tensor, threshold):
+def get_indices_and_values_as_lists_torch(tensor, threshold, less_than = True):
     """
     Get the flattened indices and values of elements in a tensor smaller than a given threshold as Python lists.
     
@@ -85,14 +85,47 @@ def get_indices_and_values_as_lists(tensor, threshold):
     Returns:
         list, list: Flattened indices and values as Python lists.
     """
-    # Create a boolean mask for elements smaller than the threshold
-    mask = tensor < threshold
+    if less_than:
+        # Create a boolean mask for elements smaller than the threshold
+        mask = tensor < threshold
+    else:
+        mask = tensor > threshold
     
     # Get the flattened indices of the elements that match the condition
     valid_indices = torch.nonzero(mask.flatten(), as_tuple=False).squeeze(1)
     
     # Extract the corresponding values
     values = tensor[mask]
+    
+    # Convert indices and values to Python lists
+    indices_list = valid_indices.tolist()
+    values_list = values.tolist()
+    
+    return indices_list, values_list
+
+def get_indices_and_values_as_lists_np(array, threshold, less_than=True):
+    """
+    Get the flattened indices and values of elements in a NumPy array smaller (or greater) than a given threshold as Python lists.
+    
+    Args:
+        array (np.ndarray): The input array of any shape.
+        threshold (float): The threshold value.
+        less_than (bool): If True, look for values less than the threshold. Otherwise, greater than the threshold.
+    
+    Returns:
+        list, list: Flattened indices and values as Python lists.
+    """
+    if less_than:
+        # Create a boolean mask for elements smaller than the threshold
+        mask = array < threshold
+    else:
+        mask = array > threshold
+    
+    # Get the flattened indices of the elements that match the condition
+    valid_indices = np.flatnonzero(mask)
+    
+    # Extract the corresponding values
+    values = array[mask]
     
     # Convert indices and values to Python lists
     indices_list = valid_indices.tolist()
@@ -115,6 +148,8 @@ class SOD:
         kpr_cfg = build_config(config_path="/home/enrique/vision_ws/src/person_detection_temi/models/kpr_market_test.yaml", display_diff=True)
         self.kpr_reid = KPR(cfg=kpr_cfg, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
 
+        self.cls = MultiPartClassifier(6, 512, 'svm')
+        self.mem = MemoryManager(100, 6, 512)
 
         self.template = None
         self.template_features = None
@@ -126,8 +161,6 @@ class SOD:
         self.kk = [[self.fx, 0., self.cx],
                    [0., self.fy, self.cy],
                    [0., 0., 1.]]
-        
-        width, height = 640, 480
 
         self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
 
@@ -240,15 +273,54 @@ class SOD:
 
         fq_, vq_ = template_features
         fg_, vg_ = detections_features
+
+        if self.cls.is_trained():
+            predictions = self.cls.predict(fg_.detach().cpu().numpy(), vg_.detach().cpu().numpy())
+            print("predictions", predictions.shape, predictions)
+
+            # Implement this to make decisions based on an svm or logistic 
+            if self.cls.is_svm:
+                best_idx,  decision_v = get_indices_and_values_as_lists_np(predictions, 0, less_than=False)
+
+                if (len(best_idx) > 1 and np.max(decision_v) > 3) :
+                    labels = np.zeros(fg_.shape[0]); labels[np.argmax(decision_v)] = 1
+                    self.cls.train(fg_.detach().cpu().numpy().astype(np.float64), vg_.detach().cpu().numpy(), labels)
+
+            elif self.cls.is_logistic:
+                best_idx,  decision_v = get_indices_and_values_as_lists_np(predictions, 0.5, less_than=False)
+
+            decision_vals = predictions.tolist()
         
-        dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
+        else:
+            dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
+            print("dist", dist.shape, dist)
 
-        min_idx,  min_v = get_indices_and_values_as_lists(dist, similarity_thr)
+            best_idx,  decision_v = get_indices_and_values_as_lists_torch(dist, similarity_thr)
+
+            decision_vals = dist[0].tolist()
+
+            print("decision_v", len(decision_v), decision_v)
+
+            # training a more robust decision maker 
+            if (len(best_idx) > 0 and np.min(decision_v) < 0.6 and not self.cls.is_trained()) :
+
+                labels = np.zeros(fg_.shape[0]); labels[np.argmin(decision_v)] = 1
+
+                if self.mem.positive_count() < 15 or self.mem.negative_count() < 15:
+
+                    self.mem.collect(fg_.detach().cpu().numpy(), vg_.detach().cpu().numpy(), labels)
+                else:
+                    # train for the first time
+                    samples_train, vis_train, labels_train = self.mem.get_samples()
+                    self.cls.train(samples_train, vis_train, labels_train)
 
 
-        # min_d, min_idx = torch.min(dist, dim=1)
+        print("Number of samples: ", self.mem.total_count())
+        print("best_idx", len(best_idx), best_idx)
+        print("decision_v", len(decision_v), decision_v)
+        print("decision_vals", len(decision_vals), decision_vals)
 
-        return (min_idx, dist[0].tolist())
+        return (best_idx, decision_vals)
     
     def detect_mot(self, img, detection_class, track = False):
         # Run multiple object detection with a given desired class

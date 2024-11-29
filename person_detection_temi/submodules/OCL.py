@@ -22,10 +22,14 @@ class MultiPartClassifier:
         self.model_type = model_type
         self.is_logistic = 'logistic' == self.model_type
         self.is_svm = 'svm' == self.model_type
+        self.is_trained_ = False
         self.classifiers = [
             linear_model.SGDClassifier(loss='log_loss' if model_type == 'logistic' else 'hinge')
             for _ in range(num_parts)
         ]
+
+    def is_trained(self):
+        return self.is_trained_
 
     def train(self, X, visibility_scores, Y):
         """
@@ -63,6 +67,8 @@ class MultiPartClassifier:
                 self.classifiers[part_idx].partial_fit(X_part, y_part, classes=np.array([0, 1]))
             else:
                 continue
+
+        self.is_trained_ = True
 
     def predict(self, X, visibility_scores):
             """
