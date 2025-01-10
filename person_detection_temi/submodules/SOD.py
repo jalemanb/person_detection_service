@@ -164,6 +164,8 @@ class SOD:
 
         self.erosion_kernel = np.ones((9, 9), np.uint8)  # A 3x3 kernel, you can change the size
 
+        self.reid_mode = True
+
     def to(self, device):
         self.device = device
 
@@ -238,29 +240,58 @@ class SOD:
 
         if not (len(detections) > 0):
             return None
-
+        
+        # YOLO Detection Results
         detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
 
-        # Measure time for `feature_extraction`
-        start_time = time.time()
-        detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
-        end_time = time.time()
-        feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
-        print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
-        total_execution_time += feature_extraction_time
+        if self.reid_mode: # ReId mode
 
-        # Measure time for `similarity_check`
-        start_time = time.time()
-        similarity_check = self.similarity_check(self.template_features, detections_features, 0.75)
-        end_time = time.time()
-        similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
-        print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
-        total_execution_time += similarity_check_time
+            # Measure time for `feature_extraction` - Extract features to all subimages
+            start_time = time.time()
+            detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+            end_time = time.time()
+            feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+            total_execution_time += feature_extraction_time
 
-        if similarity_check is None:
-            return None
-        else:
-            valid_idxs, similarity = similarity_check
+            # Measure time for `similarity_check`
+            start_time = time.time()
+            similarity_check = self.similarity_check(self.template_features, detections_features, 0.75)
+            end_time = time.time()
+            similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
+            total_execution_time += similarity_check_time
+
+            if similarity_check is None:
+                return None
+            else:
+                valid_idxs, similarity = similarity_check
+
+            if len(valid_idxs) == 1: 
+                # Extra conditions
+                # and bounding boxes are well separated (from the target box)
+                # and it is abit far from the edge of the image (left or right)
+                self.reid_mode = False
+
+            print("valid_idxs", valid_idxs)
+
+        else: # Tracking mode
+
+            # Track using iou constant acceleration model
+
+            # Spatial Data Association
+
+            # Check if bounding boxes are close to the target
+            # check if the target bbox is close to the image edges 
+            # if so return nothing and change to reid_mode
+
+            # Measure time for `feature_extraction` - Extract features only to spatially consisten image
+            start_time = time.time()
+            detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+            end_time = time.time()
+            feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+            total_execution_time += feature_extraction_time
 
         print("valid_idxs", valid_idxs)
         print("similarity", similarity)
@@ -274,51 +305,12 @@ class SOD:
         fq_, vq_ = template_features
         fg_, vg_ = detections_features
 
-        if self.cls.is_trained():
-            predictions = self.cls.predict(fg_.detach().cpu().numpy(), vg_.detach().cpu().numpy())
-            print("predictions", predictions.shape, predictions)
+        dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
+        print("dist", dist.shape, dist)
 
-            # Implement this to make decisions based on an svm or logistic 
-            if self.cls.is_svm:
-                best_idx,  decision_v = get_indices_and_values_as_lists_np(predictions, 0, less_than=False)
+        best_idx,  decision_v = get_indices_and_values_as_lists_torch(dist, similarity_thr)
 
-                if (len(best_idx) > 1 and np.max(decision_v) > 3) :
-                    labels = np.zeros(fg_.shape[0]); labels[np.argmax(decision_v)] = 1
-                    self.cls.train(fg_.detach().cpu().numpy().astype(np.float64), vg_.detach().cpu().numpy(), labels)
-
-            elif self.cls.is_logistic:
-                best_idx,  decision_v = get_indices_and_values_as_lists_np(predictions, 0.5, less_than=False)
-
-            decision_vals = predictions.tolist()
-        
-        else:
-            dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
-            print("dist", dist.shape, dist)
-
-            best_idx,  decision_v = get_indices_and_values_as_lists_torch(dist, similarity_thr)
-
-            decision_vals = dist[0].tolist()
-
-            print("decision_v", len(decision_v), decision_v)
-
-            # training a more robust decision maker 
-            if (len(best_idx) > 0 and np.min(decision_v) < 0.6 and not self.cls.is_trained()) :
-
-                labels = np.zeros(fg_.shape[0]); labels[np.argmin(decision_v)] = 1
-
-                if self.mem.positive_count() < 15 or self.mem.negative_count() < 15:
-
-                    self.mem.collect(fg_.detach().cpu().numpy(), vg_.detach().cpu().numpy(), labels)
-                else:
-                    # train for the first time
-                    samples_train, vis_train, labels_train = self.mem.get_samples()
-                    self.cls.train(samples_train, vis_train, labels_train)
-
-
-        print("Number of samples: ", self.mem.total_count())
-        print("best_idx", len(best_idx), best_idx)
-        print("decision_v", len(decision_v), decision_v)
-        print("decision_vals", len(decision_vals), decision_vals)
+        decision_vals = dist[0].tolist()
 
         return (best_idx, decision_vals)
     
