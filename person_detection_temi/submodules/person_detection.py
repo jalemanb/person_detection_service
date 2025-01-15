@@ -48,7 +48,7 @@ class HumanPoseEstimationNode(Node):
         resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
         
         # Loading Template IMG
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb.png')
+        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate.png')
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
@@ -60,7 +60,7 @@ class HumanPoseEstimationNode(Node):
         self.model.template_update(self.template_img)
 
         # Warmup inference (GPU can be slow in the first inference)
-        self.model.detect(img_rgb = np.ones((480, 640, 3), dtype=np.uint8), img_depth = np.ones((480, 640), dtype=np.uint16), detection_thr = 0.3)
+        self.model.detect(img_rgb = np.ones((480, 640, 3), dtype=np.uint8), img_depth = np.ones((480, 640), dtype=np.uint16))
         self.get_logger().warning('Warmup Inference Executed')
 
         # Frame ID from where the human is being detected
@@ -97,7 +97,7 @@ class HumanPoseEstimationNode(Node):
 
         start_time = time.time()
         ############################
-        results = self.model.detect(rgb_image, depth_image, detection_thr = 0.3)
+        results = self.model.detect(rgb_image, depth_image)
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
