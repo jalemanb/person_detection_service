@@ -3,6 +3,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, PointCloud2
 from realsense2_camera_msgs.msg import RGBD
+from person_detection_msgs.msg import BoundingBox
+from person_detection_msgs.msg import BoundingBoxArray
 from geometry_msgs.msg import Pose, TransformStamped, PoseArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
@@ -27,6 +29,7 @@ class HumanPoseEstimationNode(Node):
         self.publisher_human_pose = self.create_publisher(PoseArray, '/detections', 10)
         self.publisher_debug_detection_image_compressed = self.create_publisher(CompressedImage, '/human_detection_debug/compressed/human_detected', 10)
         self.publisher_debug_detection_image = self.create_publisher(Image, '/human_detection_debug/human_detected', 10)
+        self.publisher_debug_bounding_boxes = self.create_publisher(BoundingBoxArray, '/human_detection_debug/bounding_boxes', 10)
 
         # Create a TransformBroadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -48,7 +51,7 @@ class HumanPoseEstimationNode(Node):
         resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
         
         # Loading Template IMG
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate.png')
+        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_corridor_corners.jpg')
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
@@ -147,10 +150,21 @@ class HumanPoseEstimationNode(Node):
 
         print("confidences", confidences)
 
+
+        bounding_boxes_list = []
+
         if len(boxes) > 0 and len(kpts) > 0:
 
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = box
+
+                individual_bounding_box = BoundingBox()
+                individual_bounding_box.x1 = int(x1)
+                individual_bounding_box.y1 = int(y1)
+                individual_bounding_box.x2 = int(x2)
+                individual_bounding_box.y2 = int(y2)
+
+                bounding_boxes_list.append(individual_bounding_box)
 
                 # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
@@ -162,16 +176,12 @@ class HumanPoseEstimationNode(Node):
                     overlay = rgb_img.copy()
                     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
                     cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
+                    individual_bounding_box.tgt = True
 
+                # Just for debugging
                 cv2.putText(rgb_img, f"{confidences[i]:.2f}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-                # if conf > conf_thr:
-                #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-                # else:
-                #     cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                #     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
             
                 kpt = kpts[i]
                 for j in range(kpt.shape[0]):
@@ -180,17 +190,16 @@ class HumanPoseEstimationNode(Node):
                     cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
 
 
-            # for kpt in kpts:
-            #     for i in range(kpt.shape[0]):
-            #         u = kpt[i, 0]
-            #         v = kpt[i, 1]
-            #         cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
-
 
         if compressed:
             self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
+        
+        # Publishing the bounding boxes by frame
+        bounding_boxes_msg = BoundingBoxArray()
+        bounding_boxes_msg.boxes = bounding_boxes_list
+        self.publisher_debug_bounding_boxes.publish(bounding_boxes_msg)
 
 
     def publish_human_pose(self, poses, orientation, frame_id):

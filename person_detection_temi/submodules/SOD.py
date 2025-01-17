@@ -260,8 +260,12 @@ class SOD:
         self.template = None
         self.template_features = None
 
+        # Intel Realsense Values
         self.fx, self.fy, self.cx, self.cy = 620.8472290039062, 621.053466796875, 325.1631164550781, 237.45947265625  # RGB Camera Intrinsics
         self.fx, self.fy, self.cx, self.cy = 618.119349, 615.823749, 318.472087, 231.353083
+
+        # ZED 1.0 Values
+        self.fx, self.fy, self.cx, self.cy = 338.5, 338.5, 342.6, 176.2
 
         self.kk = [[self.fx, 0., self.cx],
                    [0., self.fy, self.cy],
@@ -475,14 +479,14 @@ class SOD:
 
                 # Check if there is a substantial change
                 dist, part_dist = self.kpr_reid.compare(updated_features[0], self.template_features[0], updated_features[1], self.template_features[1])
-
+                
+                print("DIST:", dist)
                 if dist[0] > self.reid_thr:
                     self.template_features = updated_features # 
                     # self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.5)
 
                 else:
                     self.template_features = self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.3)
-
 
             # self.cls.train(updated_features[0].detach().cpu().numpy(), updated_features[1].detach().cpu().numpy(), [1])
 
