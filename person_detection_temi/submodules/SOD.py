@@ -390,7 +390,6 @@ class SOD:
             # print("self.template_features_visibility", self.template_features[1].shape)
             # print("detections_features_visibility", detections_features[1].shape)
 
-
             if similarity_check is None:
                 self.reid_mode = True
                 return None

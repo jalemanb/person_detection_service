@@ -27,7 +27,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'person_detection_node = person_detection_temi.person_detection_node:main'
+            'person_detection_node = person_detection_temi.person_detection_node:main',
+            'eval = person_detection_temi.eval:main',
         ],
     },
 )
