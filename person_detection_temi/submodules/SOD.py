@@ -278,11 +278,12 @@ class SOD:
         self.cov_kf = None
         self.border_thr = 10
 
-        self.reid_thr = 0.7 # TO be set to 0.6 for deployment purposes
+        self.reid_thr = 0.8 # To be set to 0.6 for deployment purposes
 
         print("Tracker Armed")
 
         self.reid_mode = True
+        self.is_tracking = False
 
     def to(self, device):
         self.device = device
@@ -343,166 +344,199 @@ class SOD:
 
     def detect(self, img_rgb, img_depth, detection_class=0):
 
-        if self.template is None:
-            return None
+        # Get Image Dimensions (Assumes noisy message wth varying image size) 
+        img_h = img_rgb.shape[0]
+        img_w = img_rgb.shape[1]
 
-        total_execution_time = 0  # To accumulate total time
-
-        # Measure time for `masked_detections`
-        start_time = time.time()
-        detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.5)
-        end_time = time.time()
-        masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
-        print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
-        total_execution_time += masked_detections_time
-
-        if not (len(detections) > 0):
-            self.reid_mode = True
-            return None
-        
-        # YOLO Detection Results
-        detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
-
-        # Up to This Point There are Only Yolo Detections ##
-
-        if self.reid_mode: # ReId mode
-
-            print("REID MOde")
-
-            # Measure time for `feature_extraction` - Extract features to all subimages
-            start_time = time.time()
-            detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
-            end_time = time.time()
-            feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
-            print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
-            total_execution_time += feature_extraction_time
-
-            # Measure time for `similarity_check`
-            start_time = time.time()
-            similarity_check = self.similarity_check(self.template_features, detections_features, self.reid_thr)
-            end_time = time.time()
-            similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
-            print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
-            total_execution_time += similarity_check_time
-
-            # print("self.template_features", self.template_features[0].shape)
-            # print("detections_features", detections_features[0].shape)
-            # print("self.template_features_visibility", self.template_features[1].shape)
-            # print("detections_features_visibility", detections_features[1].shape)
-
-            if similarity_check is None:
-                self.reid_mode = True
-                return None
-            else:
-                valid_idxs, similarity = similarity_check
-                print("valid_idxs", valid_idxs)
-
-            if len(valid_idxs) == 1: 
-                # Extra conditions
-                best_match_idx = valid_idxs[0]
-                target_bbox = bboxes[best_match_idx]
-
-                # Check the bounding boxes are well separated amoung each other (distractor boxes from the target box)
-                distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
-                ious_to_target = iou_vectorized(target_bbox,  distractor_bbox)
-
-                # Check the target Box is  far from the edge of the image (left or right)
-                tx1, _, tx2, _ = target_bbox
-                if not np.any(ious_to_target > 0) and (tx1 > self.border_thr or tx2 < img_rgb.shape[1] - self.border_thr):
-                    self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(bboxes[valid_idxs[0]])[0])
-                    self.reid_mode = False
-
-
-        else: # Tracking mode
-            print("TRACKING MODE")
-
-            # self.reid_thr = 0.6 # to be deleted for deployment purposes
-
-            # Track using iou constant acceleration model or ay opencv tracker (KCF)
-            # ok, bbox = self.tracker.update(img_rgb)
-
-            self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
-
-            # ious = iou_vectorized(xyah_to_bbox(self.mean_kf[:4])[0], bboxes)
-            # best_match_idx = np.argmax(ious)
-
-            ious = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
-            best_match_idx = np.argmin(ious)
-
-            if ious[best_match_idx] > chi2inv95[4]:
-                self.reid_mode = True
+        with torch.no_grad():
+            
+            # If there is not template initialization then dont return anything
+            if self.template is None:
                 return None
 
-            self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
+            total_execution_time = 0  # To accumulate total time
 
-            similarity = ious
+            # Measure time for `masked_detections`
+            start_time = time.time()
+            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.5)
+            end_time = time.time()
+            masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
+            total_execution_time += masked_detections_time
 
-            valid_idxs = [best_match_idx]
-
-            target_bbox = bboxes[best_match_idx]
-
-            tx1, ty1, tx2, ty2 = target_bbox
-
-            # Spatial Data Association
-
-            # Check if bounding boxes are too close to the target
-            # if so return nothing and change to reid_mode
-            if len(bboxes) > 1:
-                # See two time steps into the futre if there will be an intersection
-                fut_mean, fut_cov = self.tracker.predict(self.mean_kf, self.cov_kf)
-                # fut_mean, fut_cov = self.tracker.predict(fut_mean, fut_cov)
-                fut_target_bbox = xyah_to_bbox(fut_mean[:4])[0]
-
-                distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
-                ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
-                if  np.any(ious_to_target > 0):
-                    self.reid_mode = True
-
-                    for i in range(len(similarity)):
-                        similarity[i] = 100.0
-
-            # check if the target bbox is close to the image edges 
-            # if so return nothing and change to reid_mode
-            if tx1 < self.border_thr or tx2 > img_rgb.shape[1] - self.border_thr:
+            # If no detection (No human) then stay on reid mode and return Nothing
+            if not (len(detections) > 0):
                 self.reid_mode = True
+                return None
+            
+            # YOLO Detection Results
+            detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
 
-            print("BBOX DISTANCE WIDTH:", tx2 - tx1)
-            print("BBOX DISTANCE HEIGHT:", ty2 - ty1)
-            print("ASPECT RATIO:", (tx2 - tx1) / (ty2 - ty1))
+            # Up to This Point There are Only Yolo Detections #####################################
 
-            # if (tx2 - tx1) / (ty2 - ty1) > 0.25:
-            if (tx2 - tx1) > 80:
+            if self.reid_mode: # ReId mode
 
-                # Add some sort of feature learning/ prototype augmentation, etc
-                updated_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
+                print("REID MODE")
 
-                # Check if there is a substantial change
-                dist, part_dist = self.kpr_reid.compare(updated_features[0], self.template_features[0], updated_features[1], self.template_features[1])
-                
-                print("DIST:", dist)
-                if dist[0] > self.reid_thr:
-                    self.template_features = updated_features # 
-                    # self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.5)
+                # Measure time for `feature_extraction` - Extract features to all subimages
+                start_time = time.time()
+                detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+                end_time = time.time()
+                feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+                total_execution_time += feature_extraction_time
+
+                # Measure time for `similarity_check`
+                start_time = time.time()
+                appearance_dist = self.similarity_check(self.template_features, detections_features, self.reid_thr)[0]
+                end_time = time.time()
+                similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
+                total_execution_time += similarity_check_time
+
+                similarity = appearance_dist.tolist()
+
+                if self.is_tracking:
+
+                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
+
+                    mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
+                    mb_dist = np.array(mb_dist)
+                    appearance_dist = np.array(appearance_dist)
+
+                    appearance_gate = appearance_dist < self.reid_thr
+                    mb_gate = mb_dist < chi2inv95[4]
+                    gate = appearance_gate*mb_gate
+
+                    print("appearance_dist", appearance_dist)
+                    print("mb_dist", mb_dist)
+                    print("appearance_gate", appearance_gate)
+                    print("mb_gate", mb_gate)
+
+                    # Get All indices belonging to valid Detections
+                    best_idx = np.argwhere(gate == 1).flatten().tolist()
+
+                    if np.sum(gate) == 1:
+                        self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
 
                 else:
-                    self.template_features = self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.3)
+                    appearance_dist = np.array(appearance_dist)
+                    appearance_gate = appearance_dist < self.reid_thr
+                    gate = appearance_gate
 
-            # self.cls.train(updated_features[0].detach().cpu().numpy(), updated_features[1].detach().cpu().numpy(), [1])
+                    # Get All indices belonging to valid Detections
+                    best_idx = np.argwhere(gate == 1).flatten().tolist()
 
-            # # Updating the features
-            # self.template_features[0] = 0.4*self.template_features[0] + updated_features[0]
-            # # Updating the visibility scores
-            # self.template_features[1] = self.template_features[1] 
+                valid_idxs = best_idx
+                
+                # If there is not a valid detection but a box is being tracked (keep prediction until box is out of fov)
+                if not np.sum(gate) and self.is_tracking:
+                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
+                    tracked_bbox = xyah_to_bbox(self.mean_kf[:4])[0]
+                    # if tracked box is out of FOV then stop tracking and rely purely on visual appearance
+                    if tracked_bbox[2] < 0 or  tracked_bbox[0] > img_w:
+                        self.is_tracking = False
+                    return None
+                
+                # If there are no valid detection and no box is being tracked
+                elif not np.sum(gate) and not self.is_tracking:
+                    return None
+                
+                # If there is only valid detection 
+                if np.sum(gate) == 1 and not self.is_tracking: 
+                    # Extra conditions
+                    best_match_idx = best_idx[0]
+                    target_bbox = bboxes[best_match_idx]
+
+                    # Check the bounding boxes are well separated amoung each other (distractor boxes from the target box)
+                    distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
+                    ious_to_target = iou_vectorized(target_bbox,  distractor_bbox)
+
+                    # Check the target Box is  far from the edge of the image (left or right)
+                    if not np.any(ious_to_target > 0) and not self.is_tracking:
+                        self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(target_bbox)[0])
+                        self.is_tracking = True
+                        # self.reid_mode = False
 
 
-        # print("valid_idxs", valid_idxs)
-        # print("similarity", similarity)
+            # else: # Tracking mode
+            #     print("TRACKING MODE")
 
-        print("bboxes", len(bboxes))
+            #     # self.reid_thr = 0.6 # to be deleted for deployment purposes
 
-        # Return results
-        # return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
-        return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
+            #     # Track using iou constant acceleration model or ay opencv tracker (KCF)
+            #     # ok, bbox = self.tracker.update(img_rgb)
+
+            #     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
+
+            #     # ious = iou_vectorized(xyah_to_bbox(self.mean_kf[:4])[0], bboxes)
+            #     # best_match_idx = np.argmax(ious)
+
+            #     ious = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
+            #     best_match_idx = np.argmin(ious)
+
+            #     if ious[best_match_idx] > chi2inv95[4]:
+            #         self.reid_mode = True
+            #         return None
+
+            #     self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
+
+            #     similarity = ious
+
+            #     valid_idxs = [best_match_idx]
+
+            #     target_bbox = bboxes[best_match_idx]
+
+            #     tx1, ty1, tx2, ty2 = target_bbox
+
+            #     # Spatial Data Association
+
+            #     # Check if bounding boxes are too close to the target
+            #     # if so return nothing and change to reid_mode
+            #     if len(bboxes) > 1:
+            #         # See two time steps into the futre if there will be an intersection
+            #         fut_mean, fut_cov = self.tracker.predict(self.mean_kf, self.cov_kf)
+            #         # fut_mean, fut_cov = self.tracker.predict(fut_mean, fut_cov)
+            #         fut_target_bbox = xyah_to_bbox(fut_mean[:4])[0]
+
+            #         distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
+            #         ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
+            #         if  np.any(ious_to_target > 0):
+            #             self.reid_mode = True
+
+            #             for i in range(len(similarity)):
+            #                 similarity[i] = 100.0
+
+            #     # check if the target bbox is close to the image edges 
+            #     # if so return nothing and change to reid_mode
+            #     if tx1 < self.border_thr or tx2 > img_rgb.shape[1] - self.border_thr:
+            #         self.reid_mode = True
+
+            #     print("BBOX DISTANCE WIDTH:", tx2 - tx1)
+            #     print("BBOX DISTANCE HEIGHT:", ty2 - ty1)
+            #     print("ASPECT RATIO:", (tx2 - tx1) / (ty2 - ty1))
+
+            #     # if (tx2 - tx1) / (ty2 - ty1) > 0.25:
+            #     if (tx2 - tx1) > 80:
+
+            #         # Add some sort of feature learning/ prototype augmentation, etc
+            #         updated_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
+
+            #         # Check if there is a substantial change
+            #         dist, part_dist = self.kpr_reid.compare(updated_features[0], self.template_features[0], updated_features[1], self.template_features[1])
+                    
+            #         print("DIST:", dist)
+            #         if dist[0] > self.reid_thr:
+            #             self.template_features = updated_features # 
+            #             # self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.5)
+            #         else:
+            #             self.template_features = self.feature_set_fusion(self.template_features[0], updated_features[0], self.template_features[1], updated_features[1], w=0.7)
+
+            # print("bboxes", len(bboxes))
+
+            # Return results
+            # return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
+            return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
 
     def similarity_check(self, template_features, detections_features, similarity_thr):
 
@@ -510,7 +544,8 @@ class SOD:
         fg_, vg_ = detections_features
 
         dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
-        print("dist", dist.shape, dist)
+
+        return dist
 
         best_idx,  decision_v = get_indices_and_values_as_lists_torch(dist, similarity_thr)
 
