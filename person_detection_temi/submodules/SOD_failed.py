@@ -12,6 +12,8 @@ from person_detection_temi.submodules.OCL import MultiPartClassifier
 
 from person_detection_temi.submodules.bbox_kalman_filter import BboxKalmanFilter, chi2inv95
 
+from adaptive import AdaptiveThr
+
 def kp_img_to_kp_bbox(kp_xyc_img, bbox_xyxy):
     """
     Convert keypoints in image coordinates to bounding box coordinates and filter out keypoints 
@@ -278,8 +280,7 @@ class SOD:
         self.cov_kf = None
         self.border_thr = 10
 
-        self.reid_thr = 0.8
-
+        self.reid_thr = AdaptiveThr(0.8, 0.01, 0.00001, 0.001) 
 
         print("Tracker Armed")
 
@@ -369,12 +370,22 @@ class SOD:
             if not (len(detections) > 0):
                 self.reid_mode = True
                 # self.is_tracking = False
+                self.reid_thr.predict()
                 return None
             
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
 
             # Up to This Point There are Only Yolo Detections #####################################
+
+
+            ## Get the estimated threshold +3 stds
+            thr_, thr_var = self.reid_thr.get_estimate()
+            reid_thr = thr_ + (3*np.sqrt(thr_var))
+            print("CURRENT THRESHOLD: ", reid_thr)
+            ## #####################################
+
+
 
             if self.reid_mode: # ReId mode
 
@@ -390,7 +401,7 @@ class SOD:
 
                 # Measure time for `similarity_check`
                 start_time = time.time()
-                appearance_dist, part_dist = self.similarity_check(self.template_features, detections_features, self.reid_thr)
+                appearance_dist, part_dist = self.similarity_check(self.template_features, detections_features, reid_thr)
                 end_time = time.time()
                 similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
                 print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
@@ -407,14 +418,14 @@ class SOD:
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
 
-                    valid_parts_gate = np.array(torch.sum(part_dist[1:, :] > self.reid_thr, dim=0) == 0)[0]
+                    valid_parts_gate = np.array(torch.sum(part_dist[1:, :] < reid_thr, dim=0) >= 4)[0]
 
                     mb_dist = np.array(mb_dist)
                     appearance_dist = np.array(appearance_dist)
 
-                    appearance_gate = appearance_dist < self.reid_thr
+                    appearance_gate = appearance_dist < reid_thr
                     mb_gate = mb_dist < chi2inv95[4]
-                    gate = appearance_gate*mb_gate*valid_parts_gate
+                    gate = appearance_gate*mb_gate
 
                     print("appearance_dist", appearance_dist)
                     print("mb_dist", mb_dist)
@@ -427,11 +438,12 @@ class SOD:
 
                     if np.sum(gate) == 1:
                         self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
-                        
+                    else:
+                        self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
 
                 else:
                     appearance_dist = np.array(appearance_dist)
-                    appearance_gate = appearance_dist < self.reid_thr
+                    appearance_gate = appearance_dist < reid_thr
                     gate = appearance_gate
                     print("appearance_dist", appearance_dist)
 
@@ -446,6 +458,7 @@ class SOD:
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     tracked_bbox = xyah_to_bbox(self.mean_kf[:4])[0]
                     # if tracked box is out of FOV then stop tracking and rely purely on visual appearance
+                    self.reid_thr.predict()
                     if tracked_bbox[2] < 0 or  tracked_bbox[0] > img_w:
                         self.is_tracking = False
                     return None
@@ -453,10 +466,14 @@ class SOD:
                 # If there are no valid detection and no box is being tracked
                 elif not np.sum(gate) and not self.is_tracking:
                     self.reid_mode = True
+                    self.reid_thr.predict()
                     return None
                 
-                # If there is only valid detection 
+                # If there is only valid detection and no tracking is tacking place
                 if np.sum(gate) == 1 and not self.is_tracking: 
+
+                    self.reid_thr.update(appearance_dist[0])
+
                     # Extra conditions
                     best_match_idx = best_idx[0]
                     target_bbox = bboxes[best_match_idx]
@@ -470,9 +487,12 @@ class SOD:
                         self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(target_bbox)[0])
                         self.is_tracking = True
                         self.reid_mode = False
-            
-                # If there is just one valid and there is a track
+
+                # If there is only valid detection and  tracking is already tacking place
                 elif np.sum(gate) == 1 and self.is_tracking: 
+
+                    self.reid_thr.update(appearance_dist[0])
+
                     # Extra conditions
                     best_match_idx = best_idx[0]
                     target_bbox = bboxes[best_match_idx]
@@ -508,6 +528,7 @@ class SOD:
                 if mb_dist[best_match_idx] > chi2inv95[4]:
                     self.reid_mode = True
                     # self.is_tracking = False
+                    self.reid_thr.predict()
                     return None
     
                 self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
@@ -548,6 +569,7 @@ class SOD:
                 if tx1 < self.border_thr or tx2 > img_rgb.shape[1] - self.border_thr:
                     self.reid_mode = True                
                 ###############################################################################################################
+                self.reid_thr.predict()
                 
                 if not self.reid_mode:
 
@@ -556,16 +578,19 @@ class SOD:
                     latest_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
                     
                     # Only update features if enough body parts are visible
-                    if torch.sum(latest_features[1]).item() > 4:
+                    if torch.sum(latest_features[1]).item() > 5:
                         # Check if there is a substantial change
                         dist, part_dist = self.kpr_reid.compare(latest_features[0], self.template_features[0], latest_features[1], self.template_features[1])
-                        
+
                         print("DIST:", dist)
-                        if dist[0] > self.reid_thr:
+                        if dist[0] > reid_thr:
                             self.template_features = latest_features 
                         else:
                             self.template_features = self.feature_set_fusion(self.template_features[0], latest_features[0], self.template_features[1], latest_features[1], w=0.3)
-
+                        
+                        
+                        self.reid_thr.update(dist[0].item())
+            
             # Return results
             # return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
             return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)

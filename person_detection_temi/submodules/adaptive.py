@@ -1,13 +1,13 @@
 class AdaptiveThr:
-    def __init__(self, initial_value: float, process_noise: float, measurement_noise: float):
+    def __init__(self, initial_state: float, nitial_cov: float, process_noise: float, measurement_noise: float):
         """
         Initialize the Kalman Filter for a single parameter.
-        :param initial_value: Initial estimate of the parameter
+        :param initial_state: Initial estimate of the parameter
         :param process_noise: Process noise variance (Q)
         :param measurement_noise: Measurement noise variance (R)
         """
-        self.x = initial_value  # Initial state estimate
-        self.P = 1.0  # Initial covariance estimate
+        self.x = initial_state  # Initial state estimate
+        self.P = nitial_cov  # Initial covariance estimate
         self.Q = process_noise  # Process noise covariance
         self.R = measurement_noise  # Measurement noise covariance
         self.F = 1.0  # State transition coefficient
@@ -39,7 +39,7 @@ class AdaptiveThr:
         return self.x, self.P
 
 # Example usage:
-# kf = AdaptiveThr(initial_value=0.0, process_noise=0.01, measurement_noise=0.1)
+# kf = AdaptiveThr(initial_state=0.0, process_noise=0.01, measurement_noise=0.1)
 # kf.predict()
 # kf.update(1.0)
 # print(kf.get_estimate())
