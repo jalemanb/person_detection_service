@@ -51,7 +51,9 @@ class HumanPoseEstimationNode(Node):
         resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
         
         # Loading Template IMG
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_sidewalk.jpg')
+        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate_2.png')
+        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_hallway_2.jpg')
+
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
@@ -149,7 +151,6 @@ class HumanPoseEstimationNode(Node):
         thickness = 2
 
         print("confidences", confidences)
-
 
         bounding_boxes_list = []
 

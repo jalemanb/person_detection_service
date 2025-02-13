@@ -280,14 +280,12 @@ class SOD:
 
         self.reid_thr = 0.8
 
+        # Debugging vars ##################################
+        self.frame_num = 0
+        self.features_collection = []
+        self.features_tags = []
+        self.vis_collection = []
 
-        # Incremental KNN Utils #########################
-        self.max_samples = 100
-        self.gallery_feats = torch.zeros((self.max_samples, 6, 512)).cuda()
-        self.gallery_vis = torch.zeros((self.max_samples, 6)).to(torch.bool).cuda()
-        self.gallery_labels = torch.zeros((self.max_samples)).to(torch.bool).cuda()
-        self.samples_num = 0
-        #################################################
 
         print("Tracker Armed")
 
@@ -296,123 +294,6 @@ class SOD:
 
     def to(self, device):
         self.device = device
-
-
-    def store_feats(self, feats, vis, label):
-        """
-        Stores feature vectors, visibility masks, and labels into a fixed-size buffer.
-        Uses `torch.roll` to implement a circular buffer. If the batch size is larger than `max_samples`,
-        it discards excess samples.
-
-        Args:
-            feats (torch.Tensor): Feature tensor of shape [batch, 6, 512]
-            vis (torch.Tensor): Visibility tensor of shape [batch, 6] (bool)
-            label (torch.Tensor): Labels tensor of shape [batch] (bool)
-        """
-        new_feats_num = feats.shape[0]
-
-        # If batch is larger than max_samples, keep only the most recent samples
-        if new_feats_num > self.max_samples:
-            feats = feats[-self.max_samples:]  # Keep only last `max_samples` samples
-            vis = vis[-self.max_samples:]
-            label = label[-self.max_samples:]
-            new_feats_num = self.max_samples  # Adjust count
-
-        if self.samples_num < self.max_samples:
-            # Append new samples normally
-            available_space = self.max_samples - self.samples_num
-            num_to_store = min(new_feats_num, available_space)
-
-            self.gallery_feats[self.samples_num:self.samples_num + num_to_store] = feats[:num_to_store]
-            self.gallery_vis[self.samples_num:self.samples_num + num_to_store] = vis[:num_to_store]
-            self.gallery_labels[self.samples_num:self.samples_num + num_to_store] = label[:num_to_store]
-
-            self.samples_num += num_to_store
-
-        else:
-            # Use torch.roll to shift old data and insert new samples at the beginning
-            self.gallery_feats = torch.roll(self.gallery_feats, shifts=-new_feats_num, dims=0)
-            self.gallery_vis = torch.roll(self.gallery_vis, shifts=-new_feats_num, dims=0)
-            self.gallery_labels = torch.roll(self.gallery_labels, shifts=-new_feats_num, dims=0)
-
-            # Overwrite the first `new_feats_num` positions with new data
-            self.gallery_feats[-new_feats_num:] = feats
-            self.gallery_vis[-new_feats_num:] = vis
-            self.gallery_labels[-new_feats_num:] = label
-
-    def iknn(self, feats, feats_vis, metric="euclidean", threshold=0.8):
-        """
-        Compare tensors A[N, 6, 512] and B[batch, 6, 512] part-by-part with visibility filtering.
-        Retrieve k smallest distances, classify based on nearest neighbors' labels, and apply a threshold.
-
-        Args:
-            A (torch.Tensor): Feature tensor of shape [N, 6, 512]
-            B (torch.Tensor): Feature tensor of shape [batch, 6, 512]
-            visibility_A (torch.Tensor): Visibility mask for A [N, 6] (bool)
-            visibility_B (torch.Tensor): Visibility mask for B [batch, 6] (bool)
-            labels_A (torch.Tensor): Boolean labels of shape [N] corresponding to A
-            metric (str): Distance metric, "euclidean" or "cosine"
-            k (int): Number of smallest distances to retrieve per part.
-            threshold (float): Values greater than this threshold will be masked.
-
-        Returns:
-            classification (torch.Tensor): Classification tensor of shape [batch, 6] (boolean values)
-            binary_mask (torch.Tensor): Binary mask of shape [k, batch, 6] indicating which top-k distances are within threshold
-        """
-
-        A = self.gallery_feats[:self.samples_num]
-        visibility_A = self.gallery_vis[:self.samples_num]
-        labels_A = self.gallery_labels[:self.samples_num]
-        B = feats
-        visibility_B = feats_vis
-        k = int(np.minimum(self.samples_num, np.sqrt(self.max_samples)))
-
-        N, parts, dim = A.shape
-        batch = B.shape[0]
-
-        # Expand A and B to match dimensions for pairwise comparison
-        A_expanded = A.unsqueeze(1).expand(N, batch, parts, dim)  # [N, batch, 6, 512]
-        B_expanded = B.unsqueeze(0).expand(N, batch, parts, dim)  # [N, batch, 6, 512]
-
-        # Compute similarity/distance based on the selected metric
-        if metric == "euclidean":
-            distance = torch.norm(A_expanded - B_expanded, p=2, dim=-1)  # Euclidean distance
-        elif metric == "cosine":
-            distance = 1 - F.cosine_similarity(A_expanded, B_expanded, dim=-1)  # Cosine distance
-        else:
-            raise ValueError("Unsupported metric. Choose 'euclidean' or 'cosine'.")
-
-        # Expand visibility masks for proper masking
-        vis_A_expanded = visibility_A.unsqueeze(1).expand(N, batch, parts)  # [N, batch, 6]
-        vis_B_expanded = visibility_B.unsqueeze(0).expand(N, batch, parts)  # [N, batch, 6]
-
-        # Apply visibility mask: Only compare if both A and B parts are visible
-        valid_mask = vis_A_expanded & vis_B_expanded  # Boolean mask
-        distance[~valid_mask] = float("inf")  # Ignore invalid comparisons
-
-        # Retrieve the k smallest distances along dim=0 (N dimension)
-        top_k_values, top_k_indices = torch.topk(distance, k, dim=0, largest=False)  # [k, batch, 6]
-        print("vis", visibility_B)
-        print("top_k_values", top_k_values)
-
-
-        # Retrieve the corresponding labels for the k nearest neighbors This is the knn-prediction
-        top_k_labels = labels_A[top_k_indices]  # Shape [k, batch, 6], labels for nearest N indices
-
-
-        # Create binary mask based on threshold
-        binary_mask = top_k_values <= threshold  # [k, batch, 6]
-        binary_mask = (top_k_values <= threshold) | (top_k_values > 10)
-
-        # Apply threshold influence: Set labels to zero where distances exceed the threshold
-        valid_labels = top_k_labels * binary_mask  # Zero out labels where threshold is exceeded
-
-
-        # Perform classification by majority vote (sum up valid labels and classify based on majority vote)
-        classification = (valid_labels.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
-
-        return classification.T
-
 
     def masked_detections(self, img_rgb, img_depth = None, detection_class = 0, size = (128, 384), track = False, detection_thr = 0.5):
 
@@ -474,6 +355,19 @@ class SOD:
         img_h = img_rgb.shape[0]
         img_w = img_rgb.shape[1]
 
+        print("FRAME _NUMBER: ", self.frame_num)
+        self.frame_num += 1
+
+        if self.frame_num > 731:
+
+            stacked_features = torch.cat(self.features_collection, dim=0).numpy()  # Shape: [N, 6, 512]
+            stacked_visibilities = torch.cat(self.vis_collection, dim=0).numpy()  # Shape: [N, 6]
+            stacked_tags = np.array(self.features_tags) # Shape [N]
+            np.savez_compressed("/home/enrique/features.npz", features=stacked_features, vis=stacked_visibilities, tags=stacked_tags)
+
+            exit()
+
+
         with torch.no_grad():
             
             # If there is not template initialization then dont return anything
@@ -526,32 +420,26 @@ class SOD:
                 similarity = appearance_dist.tolist()
 
                 print("part_dist", part_dist)
-                classification = self.iknn(detections_features[0], detections_features[1])
-                print("CLASSIFICATION", classification)
-
 
                 if self.is_tracking:
 
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
 
-                    # knn_gate = (torch.sum(classification, dim=0) > 4).cpu().numpy()
-
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0)).cpu().numpy()
+                    valid_parts_gate = np.array(torch.sum(part_dist[1:, :] > self.reid_thr, dim=0) == 0)[0]
 
                     mb_dist = np.array(mb_dist)
-                    mb_gate = mb_dist < chi2inv95[4]
-
                     appearance_dist = np.array(appearance_dist)
-                    appearance_gate = appearance_dist < self.reid_thr
 
-                    gate = knn_gate*mb_gate
+                    appearance_gate = appearance_dist < self.reid_thr
+                    mb_gate = mb_dist < chi2inv95[4]
+                    gate = appearance_gate*mb_gate*valid_parts_gate
 
                     print("appearance_dist", appearance_dist)
                     print("mb_dist", mb_dist)
                     print("appearance_gate", appearance_gate)
                     print("mb_gate", mb_gate)
-                    print("knn_gate", knn_gate)
+                    print("valid_parts", valid_parts_gate)
 
                     # Get All indices belonging to valid Detections
                     best_idx = np.argwhere(gate == 1).flatten().tolist()
@@ -560,18 +448,37 @@ class SOD:
                         self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
                         
                 else:
-                    # knn_gate = (torch.sum(classification, dim=0) >= 5).cpu().numpy()
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0)).cpu().numpy()
-
                     appearance_dist = np.array(appearance_dist)
                     appearance_gate = appearance_dist < self.reid_thr
-                    gate = knn_gate
+                    gate = appearance_gate
                     print("appearance_dist", appearance_dist)
 
                     # Get All indices belonging to valid Detections
                     best_idx = np.argwhere(gate == 1).flatten().tolist()
 
                 valid_idxs = best_idx
+
+                ############### DEBUGGING #########################################
+                if np.sum(gate):
+                    for i in range(0, len(detections)-1):
+
+                        temp_latest_features = detections_features[0][valid_idxs].cpu()
+                        temp_latest_vis = detections_features[1][valid_idxs].cpu()
+
+                        if i == valid_idxs[0]:
+                            self.features_collection.append(temp_latest_features)
+                            self.vis_collection.append(temp_latest_vis)
+                            self.features_tags.append(1)
+
+                        else:
+                            self.features_collection.append(temp_latest_features)
+                            self.vis_collection.append(temp_latest_vis)
+                            self.features_tags.append(0)
+                ############### DEBUGGING #########################################
+
+
+
+                print("FEATURES AND VISIBILITY SCORE", self.template_features[0].shape, self.template_features[1].shape)
                 
                 # If there is not a valid detection but a box is being tracked (keep prediction until box is out of fov)
                 if not np.sum(gate) and self.is_tracking:
@@ -653,7 +560,7 @@ class SOD:
                 valid_idxs = [best_match_idx]
 
                 for i in range(len(track_ids)):
-                    track_ids[i] = 2222
+                    track_ids[i] = 1111
                 ##################################################
 
                 #### IF SPATIAL AMBIGUITY IS PRESENT GO BACK TO ADD APPEARANCE INFORMATION FOR ASSOCIATION ###############
@@ -686,30 +593,31 @@ class SOD:
 
                     # Incremental Learning
                     # Add some sort of feature learning/ prototype augmentation, etc
-                    # latest_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
+                    latest_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
+                    
+                    ############### DEBUGGING #########################################
+                    print("valid_idxs debug", valid_idxs, latest_features[0].shape, latest_features[1].shape)
+                    temp_latest_features = latest_features[0].cpu()
+                    temp_latest_vis = latest_features[1].cpu()
+                    self.features_collection.append(temp_latest_features)
+                    self.vis_collection.append(temp_latest_vis)
+                    self.features_tags.append(1)
+                    ############### DEBUGGING #########################################
 
-                    latest_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
 
-                    batch_size = latest_features[0].shape[0]
-
-                    ##################################################################################################
-                    ##################################################################################################
-                    ##################################################################################################
-                    ## In this part the Features will be Added to the Gallery for the Reid Mode to do Associations####
-                    # When Adding Negative Samples vectorize the implmentation for labelling
-
-                    # Create a tensor of all False values on CUDA
-                    bool_tensor = torch.zeros(batch_size, dtype=torch.bool, device="cuda")
-                    bool_tensor[best_match_idx] = True
-                    self.store_feats(latest_features[0], latest_features[1], bool_tensor)
-
-                    print("GALLERY VALUES:", self.gallery_feats[:self.samples_num].shape)
-
-                    ##################################################################################################
-                    ##################################################################################################
-                    ##################################################################################################
+                    # Only update features if enough body parts are visible
+                    if torch.sum(latest_features[1]).item() > 4:
+                        # Check if there is a substantial change
+                        dist, part_dist = self.kpr_reid.compare(latest_features[0], self.template_features[0], latest_features[1], self.template_features[1])
+                        
+                        print("DIST:", dist)
+                        if dist[0] > self.reid_thr:
+                            self.template_features = latest_features 
+                        else:
+                            self.template_features = self.feature_set_fusion(self.template_features[0], latest_features[0], self.template_features[1], latest_features[1], w=0.3)
 
             # Return results
+            # return (poses[valid_idxs], bboxes[valid_idxs], person_kpts, track_ids, similarity, valid_idxs)
             return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
 
     def similarity_check(self, template_features, detections_features, similarity_thr):
@@ -720,6 +628,12 @@ class SOD:
         dist, part_dist = self.kpr_reid.compare(fq_, fg_, vq_, vg_)
 
         return dist, part_dist
+
+        best_idx,  decision_v = get_indices_and_values_as_lists_torch(dist, similarity_thr)
+
+        decision_vals = dist[0].tolist()
+
+        return (best_idx, decision_vals)
     
     def detect_mot(self, img, detection_class, track = False, detection_thr = 0.5):
         # Run multiple object detection with a given desired class
@@ -737,10 +651,7 @@ class SOD:
             self.template_kpts = detections[1]
 
         self.template_features = self.extract_features(self.template, self.template_kpts)
-
-        # Store First Initial Features on Galery
-        self.store_feats(self.template_features[0], self.template_features[1], torch.ones(1).to(torch.bool).cuda())
-        
+    
     def feature_extraction(self, detections_imgs, detection_kpts):
         # Extract features for similarity check
         return self.extract_features(detections_imgs, detection_kpts)
