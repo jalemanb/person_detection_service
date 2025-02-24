@@ -62,7 +62,8 @@ def main():
     resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
 
     # Load Template Image
-    template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
+    template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo2/ocl_template2.png")
+    # template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
     template_img = cv2.imread(template_img_path)
 
     # Setup Detection Pipeline
@@ -74,7 +75,9 @@ def main():
     ########################################################################################################
 
     # Paths
-    rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
+    rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
+    # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
+
     results_bboxes_file = "/media/enrique/Extreme SSD/ocl_demo/ocl_results.txt"
 
     save_boxes = True

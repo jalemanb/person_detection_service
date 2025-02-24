@@ -443,7 +443,7 @@ class SOD:
                 b_mask = cv2.erode(b_mask, self.erosion_kernel, iterations=2)  # Apply erosion to the binary mask
                 mask3ch = cv2.bitwise_and(img_rgb, img_rgb, mask=b_mask)
                 # Crop the Image
-                subimage = cv2.resize(img_rgb[y1:y2, x1:x2], size)
+                subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
                 # Getting Eyes+Torso+knees Keypoints for pose estimation
                 torso_kpts = kpts[:, :2].cpu().numpy()[[1, 2, 5, 6, 11, 12, 13, 14], :]
                 torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
