@@ -46,19 +46,23 @@ class HumanPoseEstimationNode(Node):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
-        yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
-        tracker_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
-        resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
-        
+        # yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
+        yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-pose.engine')
+        feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
+        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test.yaml')
+
+
         # Loading Template IMG
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_leroy.png')
+        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
+        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_sidewalk.jpg')
+
         # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate_2.png')
         # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_hallway_2.jpg')
 
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, resnet_path, tracker_path)
+        self.model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 

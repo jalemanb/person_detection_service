@@ -4,18 +4,31 @@ from .keypoint_promptable_reidentification.torchreid.data.datasets.keypoints_to_
 from .keypoint_promptable_reidentification.torchreid.data.transforms import build_transforms
 from .keypoint_promptable_reidentification.torchreid.data import ImageDataset
 from .keypoint_promptable_reidentification.torchreid.utils.constants import *
+from .keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
 import torch
 from torch.nn import functional as F
 import numpy as np
 
+torch.backends.cudnn.benchmark = True  # Optimize for varying input sizes
+torch.backends.cudnn.enabled = True  # Enable cuDNN optimizations (GPU only)
+torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 for matmul (Ampere GPUs)
+torch.backends.cudnn.deterministic = False  #
+
 class KPR(object):
-    def __init__(self, cfg, kpt_conf = 0.8, device = 'cpu') -> None:
+    def __init__(self, cfg_file, kpt_conf = 0.8, device = 'cpu') -> None:
+
+        cfg = build_config(config_path=cfg_file)
+        print(cfg)
         self.cfg = cfg
         self.kpt_conf = kpt_conf
         self.device = device
 
+
+
         self.model = build_model(cfg)
-        self.model.eval()
+        self.model.eval().cuda()
+        # self.model = torch.compile(self.model, mode="reduce-overhead")
+        # self.model.float()
 
         _, self.preprocess, self.target_preprocess, self.prompt_preprocess = build_transforms(
                                                                                 cfg.data.height,
@@ -80,7 +93,6 @@ class KPR(object):
 
         imgs_list = []
         prompts_list = []
-        kpts_list = []
         for i in range(imgs.shape[0]):
             # kpts = self.clamp_kpts(kpts, imgs.shape[3], imgs.shape[2])
             sample = {"image":imgs[i, :, :, :].permute(1, 2, 0).cpu().numpy(), "keypoints_xyc":kpts[i, :, :].cpu().numpy(), "negative_kps":[]}
@@ -96,14 +108,13 @@ class KPR(object):
                         )
             imgs_list.append(preprocessed_sample["image"])
             prompts_list.append(preprocessed_sample["prompt_masks"])
-            kpts_list.append(torch.Tensor(preprocessed_sample["keypoints_xyc"]))
         
         # Preprocessed images and Keypoint Prompts
         ready_imgs = torch.stack(imgs_list, dim = 0)
         ready_prompts = torch.stack(prompts_list, dim = 0)
-        ready_kpts = torch.stack(kpts_list, dim = 0)
 
-        output = self.model(images = ready_imgs, prompt_masks = ready_prompts, keypoints_xyc = ready_kpts)
+        with torch.inference_mode():
+            output = self.model(images = ready_imgs, prompt_masks = ready_prompts)
         
         features = self.extract_test_embeddings(output,  self.cfg.model.kpr.test_embeddings)
 

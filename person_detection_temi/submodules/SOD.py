@@ -1,261 +1,28 @@
 from ultralytics import YOLO
 import torch.nn.functional as F
-import torchvision.models as models
-import torch.nn as nn
 import torch, cv2
-import os, time
+import time
 import numpy as np
-from person_detection_temi.submodules.super_reid.keypoint_promptable_reidentification.torchreid.scripts.builder import build_config
-from person_detection_temi.submodules.super_reid.kpr_reid import KPR
 
-from person_detection_temi.submodules.OCL import MultiPartClassifier
-
+from person_detection_temi.submodules.kpr_onnx import KPR as KPR_onnx
+from person_detection_temi.submodules.kpr_reid import KPR as KPR_torch
 from person_detection_temi.submodules.bbox_kalman_filter import BboxKalmanFilter, chi2inv95
-
-def kp_img_to_kp_bbox(kp_xyc_img, bbox_xyxy):
-    """
-    Convert keypoints in image coordinates to bounding box coordinates and filter out keypoints 
-    that are outside the bounding box.
-    
-    Args:
-        kp_xyc_img (np.ndarray): Keypoints in image coordinates, shape (K, 3) where columns are (x, y, c).
-        bbox_xyxy (np.ndarray): Bounding box, shape (4,) as [x1, y1, x2, y2].
-    
-    Returns:
-        np.ndarray: Keypoints in bounding box coordinates, shape (K, 3), with invalid keypoints set to 0.
-    """
-    # Unpack the bounding box coordinates
-    x1, y1, x2, y2 = bbox_xyxy
-    
-    # Calculate the width and height of the bounding box
-    w = x2 - x1
-    h = y2 - y1
-    
-    # Create a copy of the keypoints to work on
-    kp_xyc_bbox = kp_xyc_img.clone()
-    
-    # Transform keypoints to bounding box-relative coordinates
-    kp_xyc_bbox[..., 0] = kp_xyc_img[..., 0] - x1
-    kp_xyc_bbox[..., 1] = kp_xyc_img[..., 1] - y1
-    
-    # Filter out keypoints outside the bounding box or with confidence == 0
-    invalid_mask = (
-        (kp_xyc_img[..., 2] == 0) |    # Keypoint has 0 confidence
-        (kp_xyc_bbox[..., 0] < 0) |   # X-coordinate is out of bounds (left)
-        (kp_xyc_bbox[..., 0] >= w) |  # X-coordinate is out of bounds (right)
-        (kp_xyc_bbox[..., 1] < 0) |   # Y-coordinate is out of bounds (top)
-        (kp_xyc_bbox[..., 1] >= h)    # Y-coordinate is out of bounds (bottom)
-    )
-    
-    # Set invalid keypoints to zero
-    kp_xyc_bbox[invalid_mask] = 0
-    
-    return kp_xyc_bbox
-
-def rescale_keypoints(rf_keypoints, size, new_size):
-    """
-    Rescale keypoints to new size.
-    Args:
-        rf_keypoints (np.ndarray): keypoints in relative coordinates, shape (K, 2)
-        size (tuple): original size, (w, h)
-        new_size (tuple): new size, (w, h)
-    Returns:
-        rf_keypoints (np.ndarray): rescaled keypoints in relative coordinates, shape (K, 2)
-    """
-    w, h = size
-    new_w, new_h = new_size
-    rf_keypoints = rf_keypoints.clone()
-    rf_keypoints[..., 0] = rf_keypoints[..., 0] * new_w / w
-    rf_keypoints[..., 1] = rf_keypoints[..., 1] * new_h / h
-
-    assert ((rf_keypoints[..., 0] >= 0) & (rf_keypoints[..., 0] <= new_w)).all()
-    assert ((rf_keypoints[..., 1] >= 0) & (rf_keypoints[..., 1] <= new_h)).all()
-
-    return rf_keypoints
-
-def get_indices_and_values_as_lists_torch(tensor, threshold, less_than = True):
-    """
-    Get the flattened indices and values of elements in a tensor smaller than a given threshold as Python lists.
-    
-    Args:
-        tensor (torch.Tensor): The input tensor of any shape.
-        threshold (float): The threshold value.
-    
-    Returns:
-        list, list: Flattened indices and values as Python lists.
-    """
-    if less_than:
-        # Create a boolean mask for elements smaller than the threshold
-        mask = tensor < threshold
-    else:
-        mask = tensor > threshold
-    
-    # Get the flattened indices of the elements that match the condition
-    valid_indices = torch.nonzero(mask.flatten(), as_tuple=False).squeeze(1)
-    
-    # Extract the corresponding values
-    values = tensor[mask]
-    
-    # Convert indices and values to Python lists
-    indices_list = valid_indices.tolist()
-    values_list = values.tolist()
-    
-    return indices_list, values_list
-
-def get_indices_and_values_as_lists_np(array, threshold, less_than=True):
-    """
-    Get the flattened indices and values of elements in a NumPy array smaller (or greater) than a given threshold as Python lists.
-    
-    Args:
-        array (np.ndarray): The input array of any shape.
-        threshold (float): The threshold value.
-        less_than (bool): If True, look for values less than the threshold. Otherwise, greater than the threshold.
-    
-    Returns:
-        list, list: Flattened indices and values as Python lists.
-    """
-    if less_than:
-        # Create a boolean mask for elements smaller than the threshold
-        mask = array < threshold
-    else:
-        mask = array > threshold
-    
-    # Get the flattened indices of the elements that match the condition
-    valid_indices = np.flatnonzero(mask)
-    
-    # Extract the corresponding values
-    values = array[mask]
-    
-    # Convert indices and values to Python lists
-    indices_list = valid_indices.tolist()
-    values_list = values.tolist()
-    
-    return indices_list, values_list
-
-def iou_vectorized(box, boxes):
-    """
-    Compute the Intersection over Union (IoU) between one box and multiple boxes.
-
-    Parameters:
-    box (numpy.ndarray or list or tuple): A single box in the format [x1, y1, x2, y2].
-    boxes (numpy.ndarray or list or tuple): Multiple boxes in the format [[x1, y1, x2, y2], ...].
-
-    Returns:
-    numpy.ndarray: Array of IoU values between the input box and each of the boxes.
-    """
-    # Convert inputs to numpy arrays
-    box = np.array(box, dtype=np.float32).reshape(1, 4)
-    boxes = np.array(boxes, dtype=np.float32)
-
-    # Validate shapes
-    if box.shape != (1, 4):
-        raise ValueError("The 'box' parameter must have shape (4,).")
-    if boxes.ndim != 2 or boxes.shape[1] != 4:
-        raise ValueError("The 'boxes' parameter must have shape (N, 4).")
-
-    # Calculate intersection coordinates
-    inter_x1 = np.maximum(box[:, 0], boxes[:, 0])
-    inter_y1 = np.maximum(box[:, 1], boxes[:, 1])
-    inter_x2 = np.minimum(box[:, 2], boxes[:, 2])
-    inter_y2 = np.minimum(box[:, 3], boxes[:, 3])
-
-    # Calculate intersection area
-    inter_width = np.maximum(0, inter_x2 - inter_x1)
-    inter_height = np.maximum(0, inter_y2 - inter_y1)
-    inter_area = inter_width * inter_height
-
-    # Calculate areas of the boxes
-    box_area = (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1])
-    boxes_area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-
-    # Calculate union area
-    union_area = box_area + boxes_area - inter_area
-
-    # Compute IoU
-    iou = inter_area / union_area
-
-    return iou
-
-
-def bbox_to_xyah(bbox):
-    """
-    Convert bounding box format from [x1, y1, x2, y2] to [x, y, a, h].
-
-    Parameters:
-    bbox (list, tuple, or np.ndarray): Bounding box in [x1, y1, x2, y2] format.
-
-    Returns:
-    np.ndarray: Bounding box in [x, y, a, h] format.
-    """
-    # Convert input to numpy array
-    bbox = np.array(bbox, dtype=np.float32).reshape(-1, 4)
-
-    # Calculate width and height
-    widths = bbox[:, 2] - bbox[:, 0]
-    heights = bbox[:, 3] - bbox[:, 1]
-
-    # Calculate aspect ratio
-    aspect_ratios = np.where(heights != 0, widths / heights, 0)
-
-    # Calculate center x and y
-    center_x = bbox[:, 0] + widths / 2
-    center_y = bbox[:, 1] + heights / 2
-
-    # Create the output array
-    xyah = np.stack((center_x, center_y, aspect_ratios, heights), axis=1)
-
-    return xyah
-
-def xyah_to_bbox(xyah):
-    """
-    Convert bounding box format from [x, y, a, h] to [x1, y1, x2, y2].
-
-    Parameters:
-    xyah (list, tuple, or np.ndarray): Bounding box in [x, y, a, h] format.
-
-    Returns:
-    np.ndarray: Bounding box in [x1, y1, x2, y2] format.
-    """
-    # Convert input to numpy array
-    xyah = np.array(xyah, dtype=np.float32).reshape(-1, 4)
-
-    # Extract components
-    center_x = xyah[:, 0]
-    center_y = xyah[:, 1]
-    a = xyah[:, 2]
-    h = xyah[:, 3]
-
-    # Calculate width
-    w = a * h
-
-    # Calculate x1, y1, x2, y2
-    x1 = center_x - w / 2
-    y1 = center_y - h / 2
-    x2 = center_x + w / 2
-    y2 = center_y + h / 2
-
-    # Create the output array
-    bbox = np.stack((x1, y1, x2, y2), axis=1)
-
-    return bbox
-
+from person_detection_temi.submodules.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, bbox_to_xyah, xyah_to_bbox
 
 class SOD:
 
-    def __init__(self, yolo_model_path, feature_extracture_model_path, tracker_system_path) -> None:
+    def __init__(self, yolo_model_path, feature_extracture_model_path, feature_extracture_cfg_path, tracker_system_path = "") -> None:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.tracker_file = tracker_system_path
 
         # Detection Model
-        self.yolo = YOLO(yolo_model_path, task="segment_pose")  # load a pretrained model (recommended for training)
+        self.yolo = YOLO(yolo_model_path)  # load a pretrained model (recommended for training)
 
         # ReID System
-        kpr_cfg = build_config(config_path="/home/enrique/vision_ws/src/person_detection_temi/models/kpr_market_test.yaml", display_diff=True)
-        self.kpr_reid = KPR(cfg=kpr_cfg, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
-
-        self.cls = MultiPartClassifier(6, 512, 'svm')
+        # self.kpr_reid = KPR_onnx(feature_extracture_cfg_path, feature_extracture_model_path, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
+        self.kpr_reid = KPR_torch(feature_extracture_cfg_path, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
 
         self.template = None
         self.template_features = None
@@ -278,8 +45,7 @@ class SOD:
         self.cov_kf = None
         self.border_thr = 10
 
-        self.reid_thr = 0.8
-
+        self.reid_thr = 1.0
 
         # Incremental KNN Utils #########################
         self.max_samples = 100
@@ -289,6 +55,8 @@ class SOD:
         self.samples_num = 0
         #################################################
 
+        self.start = True
+
         print("Tracker Armed")
 
         self.reid_mode = True
@@ -296,7 +64,6 @@ class SOD:
 
     def to(self, device):
         self.device = device
-
 
     def store_feats(self, feats, vis, label):
         """
@@ -395,7 +162,6 @@ class SOD:
         print("vis", visibility_B)
         print("top_k_values", top_k_values)
 
-
         # Retrieve the corresponding labels for the k nearest neighbors This is the knn-prediction
         top_k_labels = labels_A[top_k_indices]  # Shape [k, batch, 6], labels for nearest N indices
 
@@ -429,25 +195,16 @@ class SOD:
         track_ids = []
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
-            masks = result.masks
             keypoints = result.keypoints
 
-            for i ,(box, mask, kpts) in enumerate(zip(boxes, masks, keypoints.data)):
+            for i ,(box, kpts) in enumerate(zip(boxes, keypoints.data)):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 track_id = -1 if box.id is None else box.id.int().cpu().item()
-                # Masking the original RGB image
-                contour = mask.xy.pop().astype(np.int32).reshape(-1, 1, 2)
-                b_mask = np.zeros(img_rgb.shape[:2], np.uint8)
-                b_mask = cv2.drawContours(b_mask, [contour], -1, (255, 255, 255), cv2.FILLED)
-                # Define the kernel for erosion (you can adjust the size for stronger/weaker erosion)
-                b_mask = cv2.erode(b_mask, self.erosion_kernel, iterations=2)  # Apply erosion to the binary mask
-                mask3ch = cv2.bitwise_and(img_rgb, img_rgb, mask=b_mask)
                 # Crop the Image
-                subimage = cv2.resize(mask3ch[y1:y2, x1:x2], size)
+                subimage = cv2.resize(img_rgb[y1:y2, x1:x2], size)
                 # Getting Eyes+Torso+knees Keypoints for pose estimation
                 torso_kpts = kpts[:, :2].cpu().numpy()[[1, 2, 5, 6, 11, 12, 13, 14], :]
                 torso_kpts = torso_kpts[~np.all(torso_kpts == 0, axis=1)].astype(np.int32) - 1 # Rest one to avoid incorrect pixel corrdinates
-                torso_kpts = np.array([kp for kp in torso_kpts if b_mask[kp[1], kp[0]] > 0])
                 # Getting the Person Central Pose (Based on Torso Keypoints)
                 pose = self.get_person_pose(torso_kpts, img_depth)
                 # Store all the bounding box detections and subimages in a tensor
@@ -474,7 +231,7 @@ class SOD:
         img_h = img_rgb.shape[0]
         img_w = img_rgb.shape[1]
 
-        with torch.no_grad():
+        with torch.inference_mode():
             
             # If there is not template initialization then dont return anything
             if self.template is None:
@@ -499,74 +256,96 @@ class SOD:
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
 
+            print("self.samples_num", self.samples_num)
+
             # Up to This Point There are Only Yolo Detections #####################################
 
             if self.reid_mode: # ReId mode
 
                 print("REID MODE")
 
-                # Measure time for `feature_extraction` - Extract features to all subimages
-                start_time = time.time()
-                detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
-                end_time = time.time()
-                feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
-                print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
-                total_execution_time += feature_extraction_time
-
-                # Measure time for `similarity_check`
-                start_time = time.time()
-                appearance_dist, part_dist = self.similarity_check(self.template_features, detections_features, self.reid_thr)
-                end_time = time.time()
-                similarity_check_time = (end_time - start_time) * 1000  # Convert to milliseconds
-                print(f"similarity_check execution time: {similarity_check_time:.2f} ms")
-                total_execution_time += similarity_check_time
-
-                appearance_dist = appearance_dist[0]
-
-                similarity = appearance_dist.tolist()
-
-                print("part_dist", part_dist)
-                classification = self.iknn(detections_features[0], detections_features[1])
-                print("CLASSIFICATION", classification)
-
-
                 if self.is_tracking:
+
+                    print("TRACKING")
+                    print("USING SOME BBOXES")
 
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
 
-                    # knn_gate = (torch.sum(classification, dim=0) > 4).cpu().numpy()
+                    within_mb = np.argwhere(mb_dist < chi2inv95[4]).flatten().tolist()
+                    print("within_mb", within_mb)
 
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0)).cpu().numpy()
+                    if len(within_mb) < 1:
+                        return None
 
-                    mb_dist = np.array(mb_dist)
+                    # Prune Bounding Boxes to only evaluate the closest ones to the target that might cause occlusion
+                    detections_imgs = detections_imgs[within_mb]
+                    detection_kpts = detection_kpts[within_mb]
+                    bboxes = bboxes[within_mb]
+                    person_kpts = [person_kpts[i] for i in within_mb]
+                    poses = poses[within_mb]
+                    track_ids = track_ids[within_mb]
+
+                    # Measure time for `feature_extraction` - Extract features to all subimages
+                    start_time = time.time()
+                    detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+                    end_time = time.time()
+                    feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+                    total_execution_time += feature_extraction_time
+
+                    # Measure time for `iknn_time` - Classify the features with KNN
+                    start_time = time.time()
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
+                    end_time = time.time()
+                    iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    print(f"iknn_time execution time: {iknn_time:.2f} ms")
+                    total_execution_time += iknn_time
+                    print("CLASSIFICATION", classification)
+
+                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
+
+                    mb_dist = np.array(mb_dist)[within_mb]
                     mb_gate = mb_dist < chi2inv95[4]
 
-                    appearance_dist = np.array(appearance_dist)
-                    appearance_gate = appearance_dist < self.reid_thr
-
                     gate = knn_gate*mb_gate
-
-                    print("appearance_dist", appearance_dist)
-                    print("mb_dist", mb_dist)
-                    print("appearance_gate", appearance_gate)
-                    print("mb_gate", mb_gate)
-                    print("knn_gate", knn_gate)
 
                     # Get All indices belonging to valid Detections
                     best_idx = np.argwhere(gate == 1).flatten().tolist()
 
                     if np.sum(gate) == 1:
                         self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
+
+                        # latest_features = self.feature_extraction(detections_imgs=detections_imgs[best_idx], detection_kpts=detection_kpts[best_idx])
+                        latest_features = detections_features[0][best_idx]
+                        latest_visibilities = detections_features[1][best_idx]
+
+                        self.store_feats(latest_features, latest_visibilities, torch.ones(1).to(torch.bool).cuda())
                         
                 else:
-                    # knn_gate = (torch.sum(classification, dim=0) >= 5).cpu().numpy()
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0)).cpu().numpy()
 
-                    appearance_dist = np.array(appearance_dist)
-                    appearance_gate = appearance_dist < self.reid_thr
+                    print("NO TRACKING")
+                    print("USING ALL BBOXES")
+
+                    # Measure time for `feature_extraction` - Extract features to all subimages
+                    start_time = time.time()
+                    detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+                    end_time = time.time()
+                    feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+                    total_execution_time += feature_extraction_time
+
+                    # Measure time for `iknn_time` - Classify the features with KNN
+                    start_time = time.time()
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
+                    end_time = time.time()
+                    iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    print(f"iknn_time execution time: {iknn_time:.2f} ms")
+                    total_execution_time += iknn_time
+                    print("CLASSIFICATION", classification)
+
+                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
                     gate = knn_gate
-                    print("appearance_dist", appearance_dist)
 
                     # Get All indices belonging to valid Detections
                     best_idx = np.argwhere(gate == 1).flatten().tolist()
@@ -587,36 +366,19 @@ class SOD:
                 elif not np.sum(gate) and not self.is_tracking:
                     self.reid_mode = True
                     return None
-                
+                 
                 # If there is only valid detection 
-                if np.sum(gate) == 1 and not self.is_tracking: 
+                elif np.sum(gate) == 1 and not self.is_tracking: 
                     # Extra conditions
                     best_match_idx = best_idx[0]
                     target_bbox = bboxes[best_match_idx]
+                    self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(target_bbox)[0])
+                    self.is_tracking = True
+                    self.reid_mode = False
 
-                    # Check the bounding boxes are well separated amoung each other (distractor boxes from the target box)
-                    distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
-                    ious_to_target = iou_vectorized(target_bbox,  distractor_bbox)
-
-                    # Check the target Box is  far from the edge of the image (left or right)
-                    if not np.any(ious_to_target > 0):
-                        self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(target_bbox)[0])
-                        self.is_tracking = True
-                        self.reid_mode = False
-            
-                # If there is just one valid and there is a track
                 elif np.sum(gate) == 1 and self.is_tracking: 
                     # Extra conditions
-                    best_match_idx = best_idx[0]
-                    target_bbox = bboxes[best_match_idx]
-
-                    # Check the bounding boxes are well separated amoung each other (distractor boxes from the target box)
-                    distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
-                    ious_to_target = iou_vectorized(target_bbox,  distractor_bbox)
-
-                    # Check the target Box is  far from the edge of the image (left or right)
-                    if not np.any(ious_to_target > 0):
-                        self.reid_mode = False
+                    self.reid_mode = False
 
             else: # Tracking mode
                 print("TRACKING MODE")
@@ -629,18 +391,12 @@ class SOD:
                 mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
                 best_match_idx = np.argmin(mb_dist)
 
-                # Association Based on IOU
-                # ious = iou_vectorized(xyah_to_bbox(self.mean_kf[:4])[0], bboxes)
-                # best_match_idx = np.argmax(ious)
-
                 target_bbox = bboxes[best_match_idx]
-
-                print("MB ASSS: ", mb_dist[best_match_idx] )
 
                 # If the Association Metric (Mahalanobies Distance) is greater than the gate then return
                 if mb_dist[best_match_idx] > chi2inv95[4]:
+                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     self.reid_mode = True
-                    # self.is_tracking = False
                     return None
     
                 self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
@@ -668,7 +424,7 @@ class SOD:
 
                     distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
                     ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
-                    if  np.any(ious_to_target > 0):
+                    if  np.any(ious_to_target > 0.2):
                         self.reid_mode = True
 
                         for i in range(len(similarity)):
@@ -686,28 +442,22 @@ class SOD:
 
                     # Incremental Learning
                     # Add some sort of feature learning/ prototype augmentation, etc
-                    # latest_features = self.feature_extraction(detections_imgs=detections_imgs[[best_match_idx]], detection_kpts=detection_kpts[[best_match_idx]])
 
-                    latest_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+                    # Measure time for `feature_extraction and feature storing` - Extract features to all subimages
+                    start_time = time.time()
 
-                    batch_size = latest_features[0].shape[0]
+                    latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
 
-                    ##################################################################################################
-                    ##################################################################################################
-                    ##################################################################################################
-                    ## In this part the Features will be Added to the Gallery for the Reid Mode to do Associations####
-                    # When Adding Negative Samples vectorize the implmentation for labelling
+                    self.store_feats(latest_features[0], latest_features[1], torch.ones(1).to(torch.bool).cuda())
 
-                    # Create a tensor of all False values on CUDA
-                    bool_tensor = torch.zeros(batch_size, dtype=torch.bool, device="cuda")
-                    bool_tensor[best_match_idx] = True
-                    self.store_feats(latest_features[0], latest_features[1], bool_tensor)
+                    print("GALLERY Samples:", self.samples_num, latest_features[0].shape)
 
-                    print("GALLERY VALUES:", self.gallery_feats[:self.samples_num].shape)
+                    end_time = time.time()
+                    incremental_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    print(f"INCREMENTAL execution time: {incremental_time:.2f} ms")
 
-                    ##################################################################################################
-                    ##################################################################################################
-                    ##################################################################################################
+            #To erase #####################################################
+            similarity = np.random.uniform(0, 1,  poses.shape[0]).tolist()
 
             # Return results
             return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)
@@ -833,51 +583,3 @@ class SOD:
         qz = np.sin(half_yaw)
         
         return (qx, qy, qz, qw)
-    
-    def feature_set_fusion(self, old_f, new_f, old_vis, new_vis, w=0.7):
-        """
-        Perform feature fusion based on visibility scores with optimized memory usage.
-
-        Parameters:
-        - old_f: Tensor of shape [batch, 6, 512], representing the old feature set.
-        - new_f: Tensor of shape [batch, 6, 512], representing the new feature set.
-        - old_vis: Tensor of shape [batch, 6], representing visibility scores for old features.
-        - new_vis: Tensor of shape [batch, 6], representing visibility scores for new features.
-        - w: Weight for averaging old and new features when both are visible.
-
-        Returns:
-        - result: Tensor of shape [batch, 6, 512], representing the fused feature set.
-        - final_visibility: Tensor of shape [batch, 6], representing the final visibility scores.
-        """
-        with torch.no_grad():  # Disable gradient tracking for efficiency
-            # Ensure visibility tensors are floats
-            old_vis = old_vis.float()  # Shape: [batch, 6]
-            new_vis = new_vis.float()  # Shape: [batch, 6]
-
-            # OR operation for final visibility (visible in either one or both)
-            final_visibility = torch.max(old_vis, new_vis)
-
-            # Precompute negative visibilities for efficiency
-            new_vis_neg = 1 - new_vis
-            old_vis_neg = 1 - old_vis
-
-            # Create masks for the three cases
-            both_visible_mask = (old_vis * new_vis).unsqueeze(-1)  # Shape: [batch, 6, 1]
-            old_visible_mask = (old_vis * new_vis_neg).unsqueeze(-1)  # Shape: [batch, 6, 1]
-            new_visible_mask = (old_vis_neg * new_vis).unsqueeze(-1)  # Shape: [batch, 6, 1]
-
-            # Compute the average vectors where both are visible
-            average_vectors = w * old_f + (1 - w) * new_f  # Shape: [batch, 6, 512]
-
-            # Combine results
-            result = (
-                both_visible_mask * average_vectors
-                + old_visible_mask * old_f  # Use old_f directly where only old features are visible
-                + new_visible_mask * new_f  # Use new_f directly where only new features are visible
-            )
-
-            # Clear unused intermediate tensors
-            del both_visible_mask, old_visible_mask, new_visible_mask, average_vectors
-
-        # Return the fused feature set and final visibility
-        return result, final_visibility
