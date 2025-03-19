@@ -7,6 +7,7 @@ import numpy as np
 from person_detection_temi.submodules.kpr_onnx import KPR as KPR_onnx
 from person_detection_temi.submodules.kpr_reid import KPR as KPR_torch
 from person_detection_temi.submodules.bbox_kalman_filter import BboxKalmanFilter, chi2inv95
+from person_detection_temi.submodules.memory import Bucket
 from person_detection_temi.submodules.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, bbox_to_xyah, xyah_to_bbox
 
 class SOD:
@@ -47,17 +48,10 @@ class SOD:
 
         self.reid_thr = 1.0
 
-        # Incremental KNN Utils #########################
-        self.max_samples = 100
-        self.gallery_feats = torch.zeros((self.max_samples, 6, 512)).cuda()
-        self.gallery_vis = torch.zeros((self.max_samples, 6)).to(torch.bool).cuda()
-        self.gallery_labels = torch.zeros((self.max_samples)).to(torch.bool).cuda()
-        self.samples_num = 0
-        #################################################
+        self.memory_bucket = Bucket(100)
+        self.bucket_counter = 0
 
         self.start = True
-
-        print("Tracker Armed")
 
         self.reid_mode = True
         self.is_tracking = False
@@ -65,47 +59,6 @@ class SOD:
     def to(self, device):
         self.device = device
 
-    def store_feats(self, feats, vis, label):
-        """
-        Stores feature vectors, visibility masks, and labels into a fixed-size buffer.
-        Uses `torch.roll` to implement a circular buffer. If the batch size is larger than `max_samples`,
-        it discards excess samples.
-
-        Args:
-            feats (torch.Tensor): Feature tensor of shape [batch, 6, 512]
-            vis (torch.Tensor): Visibility tensor of shape [batch, 6] (bool)
-            label (torch.Tensor): Labels tensor of shape [batch] (bool)
-        """
-        new_feats_num = feats.shape[0]
-
-        # If batch is larger than max_samples, keep only the most recent samples
-        if new_feats_num > self.max_samples:
-            feats = feats[-self.max_samples:]  # Keep only last `max_samples` samples
-            vis = vis[-self.max_samples:]
-            label = label[-self.max_samples:]
-            new_feats_num = self.max_samples  # Adjust count
-
-        if self.samples_num < self.max_samples:
-            # Append new samples normally
-            available_space = self.max_samples - self.samples_num
-            num_to_store = min(new_feats_num, available_space)
-
-            self.gallery_feats[self.samples_num:self.samples_num + num_to_store] = feats[:num_to_store]
-            self.gallery_vis[self.samples_num:self.samples_num + num_to_store] = vis[:num_to_store]
-            self.gallery_labels[self.samples_num:self.samples_num + num_to_store] = label[:num_to_store]
-
-            self.samples_num += num_to_store
-
-        else:
-            # Use torch.roll to shift old data and insert new samples at the beginning
-            self.gallery_feats = torch.roll(self.gallery_feats, shifts=-new_feats_num, dims=0)
-            self.gallery_vis = torch.roll(self.gallery_vis, shifts=-new_feats_num, dims=0)
-            self.gallery_labels = torch.roll(self.gallery_labels, shifts=-new_feats_num, dims=0)
-
-            # Overwrite the first `new_feats_num` positions with new data
-            self.gallery_feats[-new_feats_num:] = feats
-            self.gallery_vis[-new_feats_num:] = vis
-            self.gallery_labels[-new_feats_num:] = label
 
     def iknn(self, feats, feats_vis, metric="euclidean", threshold=0.8):
         """
@@ -127,12 +80,11 @@ class SOD:
             binary_mask (torch.Tensor): Binary mask of shape [k, batch, 6] indicating which top-k distances are within threshold
         """
 
-        A = self.gallery_feats[:self.samples_num]
-        visibility_A = self.gallery_vis[:self.samples_num]
-        labels_A = self.gallery_labels[:self.samples_num]
+        A = self.memory_bucket.get_features()
+        visibility_A = self.memory_bucket.get_vis()
         B = feats
         visibility_B = feats_vis
-        k = int(np.minimum(self.samples_num, np.sqrt(self.max_samples)))
+        k = int(np.minimum(self.memory_bucket.get_samples_num(), np.sqrt(self.memory_bucket.get_max_samples())))
 
         N, parts, dim = A.shape
         batch = B.shape[0]
@@ -159,23 +111,13 @@ class SOD:
 
         # Retrieve the k smallest distances along dim=0 (N dimension)
         top_k_values, top_k_indices = torch.topk(distance, k, dim=0, largest=False)  # [k, batch, 6]
-        print("vis", visibility_B)
-        print("top_k_values", top_k_values)
-
-        # Retrieve the corresponding labels for the k nearest neighbors This is the knn-prediction
-        top_k_labels = labels_A[top_k_indices]  # Shape [k, batch, 6], labels for nearest N indices
-
 
         # Create binary mask based on threshold
         binary_mask = top_k_values <= threshold  # [k, batch, 6]
-        binary_mask = (top_k_values <= threshold) | (top_k_values > 10)
-
-        # Apply threshold influence: Set labels to zero where distances exceed the threshold
-        valid_labels = top_k_labels * binary_mask  # Zero out labels where threshold is exceeded
-
+        # binary_mask = (top_k_values <= threshold) | (top_k_values > 10)
 
         # Perform classification by majority vote (sum up valid labels and classify based on majority vote)
-        classification = (valid_labels.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
+        classification = (binary_mask.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
 
         return classification.T
 
@@ -231,6 +173,9 @@ class SOD:
         img_h = img_rgb.shape[0]
         img_w = img_rgb.shape[1]
 
+        self.bucket_counter += 1
+
+
         with torch.inference_mode():
             
             # If there is not template initialization then dont return anything
@@ -255,8 +200,6 @@ class SOD:
             
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
-
-            print("self.samples_num", self.samples_num)
 
             # Up to This Point There are Only Yolo Detections #####################################
 
@@ -316,12 +259,12 @@ class SOD:
                     if np.sum(gate) == 1:
                         self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
 
-                        # latest_features = self.feature_extraction(detections_imgs=detections_imgs[best_idx], detection_kpts=detection_kpts[best_idx])
                         latest_features = detections_features[0][best_idx]
                         latest_visibilities = detections_features[1][best_idx]
-
-                        self.store_feats(latest_features, latest_visibilities, torch.ones(1).to(torch.bool).cuda())
-                        
+                        ## For debugging Purposes #####################
+                        latest_template = detections_imgs[best_idx]
+                        ###############################################
+                        self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy())
                 else:
 
                     print("NO TRACKING")
@@ -424,11 +367,9 @@ class SOD:
 
                     distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
                     ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
+
                     if  np.any(ious_to_target > 0.2):
                         self.reid_mode = True
-
-                        for i in range(len(similarity)):
-                            similarity[i] = 100.0
 
                 tx1, ty1, tx2, ty2 = target_bbox
 
@@ -438,7 +379,7 @@ class SOD:
                     self.reid_mode = True                
                 ###############################################################################################################
                 
-                if not self.reid_mode:
+                if not self.reid_mode: #self.store:
 
                     # Incremental Learning
                     # Add some sort of feature learning/ prototype augmentation, etc
@@ -448,9 +389,7 @@ class SOD:
 
                     latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
 
-                    self.store_feats(latest_features[0], latest_features[1], torch.ones(1).to(torch.bool).cuda())
-
-                    print("GALLERY Samples:", self.samples_num, latest_features[0].shape)
+                    self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy())
 
                     end_time = time.time()
                     incremental_time = (end_time - start_time) * 1000  # Convert to milliseconds
@@ -489,7 +428,7 @@ class SOD:
         self.template_features = self.extract_features(self.template, self.template_kpts)
 
         # Store First Initial Features on Galery
-        self.store_feats(self.template_features[0], self.template_features[1], torch.ones(1).to(torch.bool).cuda())
+        self.memory_bucket.store_feats(self.template_features[0], self.template_features[1], img_patch = self.template.cpu().numpy(), debug = False)
         
     def feature_extraction(self, detections_imgs, detection_kpts):
         # Extract features for similarity check

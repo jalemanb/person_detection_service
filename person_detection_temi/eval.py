@@ -57,17 +57,18 @@ def main():
 
     # Load model paths
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
-    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
-    tracker_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
-    resnet_path = os.path.join(pkg_shared_dir, 'models', 'osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth')
+    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-pose.engine')
+    feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
+    feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test.yaml')
 
     # Load Template Image
-    template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo2/ocl_template2.png")
+    template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
+
     # template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
     template_img = cv2.imread(template_img_path)
 
     # Setup Detection Pipeline
-    model = SOD(yolo_path, resnet_path, tracker_path)
+    model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
     model.to(device)
 
     # Initialize the template
@@ -75,20 +76,23 @@ def main():
     ########################################################################################################
 
     # Paths
-    rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
+    # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
     # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
+    rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
 
     results_bboxes_file = "/media/enrique/Extreme SSD/ocl_demo/ocl_results.txt"
 
-    save_boxes = True
+    save_boxes = False
 
     # Get all RGB images sorted by numeric order
     rgb_images = sorted(
-        [f for f in os.listdir(rgb_dir) if f.startswith('rgb') and f.endswith('.png')],
+        [f for f in os.listdir(rgb_dir) if f.startswith('frame') and f.endswith('.png')],
         key=lambda x: int(''.join(filter(str.isdigit, x)))
     )
 
     bboxes = []
+
+    print(rgb_images)
 
     # Iterate through each RGB image
     for i, rgb_img_name in enumerate(rgb_images):
@@ -99,6 +103,8 @@ def main():
         print(rgb_img_path)
 
         rgb_img = cv2.imread(rgb_img_path, cv2.IMREAD_COLOR)  # Read RGB as BGR8
+        rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
+
         height, width, _ = rgb_img.shape  # Get dimensions
 
         # Generate a random depth image (grayscale)
@@ -130,13 +136,15 @@ def main():
 
         # Show the image with bounding boxes
         cv2.imshow("Detection", rgb_img)
-        cv2.waitKey(0)  # Add small delay to update the window
+        cv2.waitKey(3)  # Add small delay to update the window
 
         
 
     # Save Bounding Boxes to File
     if save_boxes:
         write_bounding_boxes_to_file(bboxes, results_bboxes_file, append=False)
+
+    model.memory_bucket.save("/home/enrique/bucket.npz")
 
     # Close OpenCV windows
     cv2.destroyAllWindows()

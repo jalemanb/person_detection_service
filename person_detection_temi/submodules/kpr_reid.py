@@ -23,8 +23,6 @@ class KPR(object):
         self.kpt_conf = kpt_conf
         self.device = device
 
-
-
         self.model = build_model(cfg)
         self.model.eval().cuda()
         # self.model = torch.compile(self.model, mode="reduce-overhead")

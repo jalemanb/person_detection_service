@@ -1,0 +1,3 @@
+[submodule "person_detection_temi/submodules/keypoint_promptable_reidentification"]
+	path = person_detection_temi/submodules/keypoint_promptable_reidentification
+	url = https://github.com/VlSomers/keypoint_promptable_reidentification.git
