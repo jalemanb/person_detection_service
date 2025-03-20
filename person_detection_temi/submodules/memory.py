@@ -4,12 +4,12 @@ import torch.nn.functional as F
 import os
 
 class Bucket:
-    def __init__(self, max_samples = 100, max_identities = 5, thr = 0.8) -> None:
+    def __init__(self, max_identities = 5, samples_per_identity = 20, thr = 0.8) -> None:
 
         # Incremental KNN Utils #########################
-        self.max_samples = max_samples
+        self.max_samples = max_identities * samples_per_identity
         self.max_identities = max_identities
-        self.samples_per_id = max_samples // max_identities
+        self.samples_per_id = samples_per_identity
         self.distance_thr = thr
 
         self.mean_prototypes_feats = torch.zeros((self.max_identities, 6, 512)).cuda()
@@ -33,7 +33,7 @@ class Bucket:
         self.img_patches = []
         #################################################
 
-    def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = True):
+    def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = False):
         """
         Stores feature vectors and visibility masks into a fixed-size buffer.
         Uses `torch.roll` to implement a circular buffer. If the batch size is larger than `max_samples`,
@@ -85,6 +85,8 @@ class Bucket:
                     self.gallery_feats[prototype_id, -1:] = feats
                     self.gallery_vis[prototype_id, -1:] = vis
 
+                self.templates_prototypes[prototype_id] = img_patch
+
             else:
                 # If the smallest distance to all the existing prototypes is larger than a given threshold then add a new mean prototype
                 # If full then reset the mean rpotype withtthe least features or randomly choose one to be deleted 
@@ -122,7 +124,7 @@ class Bucket:
         if debug:
             prototype_means_feats_np = self.mean_prototypes_feats[:self.active_prototypes_num].cpu().numpy()
             prototype_means_vis_np = self.mean_prototypes_vis[:self.active_prototypes_num].cpu().numpy()
-            prototype_templates_vis_np = self.templates_prototypes[:self.active_prototypes_num]
+            prototype_templates_vis_np = self.templates_prototypes[:self.active_prototypes_num].copy()
             feats_np = self.current_feats.cpu().numpy()
             vis_np = self.current_vis.cpu().numpy()
             self.prototype_means_feats_debug.append(prototype_means_feats_np)

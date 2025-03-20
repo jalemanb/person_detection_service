@@ -61,11 +61,18 @@ def main():
     feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test.yaml')
 
+    dataset = "lab_corridor"
+
+    rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
+    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+
     # Load Template Image
-    template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
+    # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
+
 
     # template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
     template_img = cv2.imread(template_img_path)
+
 
     # Setup Detection Pipeline
     model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
@@ -78,11 +85,12 @@ def main():
     # Paths
     # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
     # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
-    rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
+    # rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
 
     results_bboxes_file = "/media/enrique/Extreme SSD/ocl_demo/ocl_results.txt"
 
     save_boxes = False
+    save_bucket = False
 
     # Get all RGB images sorted by numeric order
     rgb_images = sorted(
@@ -96,7 +104,6 @@ def main():
 
     # Iterate through each RGB image
     for i, rgb_img_name in enumerate(rgb_images):
-
 
         rgb_img_path = os.path.join(rgb_dir, rgb_img_name)
 
@@ -138,13 +145,12 @@ def main():
         cv2.imshow("Detection", rgb_img)
         cv2.waitKey(3)  # Add small delay to update the window
 
-        
-
     # Save Bounding Boxes to File
     if save_boxes:
         write_bounding_boxes_to_file(bboxes, results_bboxes_file, append=False)
 
-    model.memory_bucket.save("/home/enrique/bucket.npz")
+    if save_bucket:
+        model.memory_bucket.save("/home/enrique/bucket.npz")
 
     # Close OpenCV windows
     cv2.destroyAllWindows()

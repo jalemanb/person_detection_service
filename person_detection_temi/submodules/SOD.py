@@ -23,7 +23,7 @@ class SOD:
 
         # ReID System
         # self.kpr_reid = KPR_onnx(feature_extracture_cfg_path, feature_extracture_model_path, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
-        self.kpr_reid = KPR_torch(feature_extracture_cfg_path, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
+        self.kpr_reid = KPR_torch(feature_extracture_cfg_path, kpt_conf=0.1, device='cuda' if torch.cuda.is_available() else 'cpu')
 
         self.template = None
         self.template_features = None
@@ -48,7 +48,8 @@ class SOD:
 
         self.reid_thr = 1.0
 
-        self.memory_bucket = Bucket(100)
+        self.memory_bucket = Bucket(max_identities = 5, samples_per_identity = 20)
+        self.debug = True
         self.bucket_counter = 0
 
         self.start = True
@@ -84,6 +85,9 @@ class SOD:
         visibility_A = self.memory_bucket.get_vis()
         B = feats
         visibility_B = feats_vis
+
+        print("visibility_B")
+        print(visibility_B)
         k = int(np.minimum(self.memory_bucket.get_samples_num(), np.sqrt(self.memory_bucket.get_max_samples())))
 
         N, parts, dim = A.shape
@@ -111,6 +115,8 @@ class SOD:
 
         # Retrieve the k smallest distances along dim=0 (N dimension)
         top_k_values, top_k_indices = torch.topk(distance, k, dim=0, largest=False)  # [k, batch, 6]
+
+        print(top_k_values)
 
         # Create binary mask based on threshold
         binary_mask = top_k_values <= threshold  # [k, batch, 6]
@@ -186,7 +192,7 @@ class SOD:
 
             # Measure time for `masked_detections`
             start_time = time.time()
-            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.5)
+            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.3)
             end_time = time.time()
             masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
             print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -239,7 +245,7 @@ class SOD:
 
                     # Measure time for `iknn_time` - Classify the features with KNN
                     start_time = time.time()
-                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.8)
                     end_time = time.time()
                     iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     print(f"iknn_time execution time: {iknn_time:.2f} ms")
@@ -264,7 +270,7 @@ class SOD:
                         ## For debugging Purposes #####################
                         latest_template = detections_imgs[best_idx]
                         ###############################################
-                        self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy())
+                        self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
                 else:
 
                     print("NO TRACKING")
@@ -389,7 +395,7 @@ class SOD:
 
                     latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
 
-                    self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy())
+                    self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy(), debug = self.debug)
 
                     end_time = time.time()
                     incremental_time = (end_time - start_time) * 1000  # Convert to milliseconds
