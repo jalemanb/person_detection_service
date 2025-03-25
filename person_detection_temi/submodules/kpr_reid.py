@@ -15,18 +15,16 @@ torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 for matmul (Ampere GP
 torch.backends.cudnn.deterministic = False  #
 
 class KPR(object):
-    def __init__(self, cfg_file, kpt_conf = 0.8, device = 'cpu') -> None:
+    def __init__(self, cfg_file, kpt_conf = 0., device = 'cpu') -> None:
 
         cfg = build_config(config_path=cfg_file)
-        print(cfg)
         self.cfg = cfg
         self.kpt_conf = kpt_conf
         self.device = device
 
         self.model = build_model(cfg)
-        self.model.eval().cuda()
-        # self.model = torch.compile(self.model, mode="reduce-overhead")
-        # self.model.float()
+        self.model.eval().to(self.device)
+
 
         _, self.preprocess, self.target_preprocess, self.prompt_preprocess = build_transforms(
                                                                                 cfg.data.height,
@@ -108,7 +106,7 @@ class KPR(object):
             prompts_list.append(preprocessed_sample["prompt_masks"])
         
         # Preprocessed images and Keypoint Prompts
-        ready_imgs = torch.stack(imgs_list, dim = 0)
+        ready_imgs = torch.stack(imgs_list,   dim = 0)
         ready_prompts = torch.stack(prompts_list, dim = 0)
 
         with torch.inference_mode():

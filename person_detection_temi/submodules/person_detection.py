@@ -49,7 +49,7 @@ class HumanPoseEstimationNode(Node):
         # yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
         yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-pose.engine')
         feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
-        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test.yaml')
+        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
 
         # Loading Template IMG

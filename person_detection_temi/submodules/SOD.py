@@ -23,7 +23,7 @@ class SOD:
 
         # ReID System
         # self.kpr_reid = KPR_onnx(feature_extracture_cfg_path, feature_extracture_model_path, kpt_conf=0.8, device='cuda' if torch.cuda.is_available() else 'cpu')
-        self.kpr_reid = KPR_torch(feature_extracture_cfg_path, kpt_conf=0.1, device='cuda' if torch.cuda.is_available() else 'cpu')
+        self.kpr_reid = KPR_torch(feature_extracture_cfg_path, kpt_conf=0., device='cuda' if torch.cuda.is_available() else 'cpu')
 
         self.template = None
         self.template_features = None
@@ -49,8 +49,9 @@ class SOD:
         self.reid_thr = 1.0
 
         self.memory_bucket = Bucket(max_identities = 5, samples_per_identity = 20)
-        self.debug = True
+        self.debug = False
         self.bucket_counter = 0
+        self.store_features = True
 
         self.start = True
 
@@ -183,7 +184,7 @@ class SOD:
 
 
         with torch.inference_mode():
-            
+                
             # If there is not template initialization then dont return anything
             if self.template is None:
                 return None
@@ -245,12 +246,15 @@ class SOD:
 
                     # Measure time for `iknn_time` - Classify the features with KNN
                     start_time = time.time()
-                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.8)
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
                     end_time = time.time()
                     iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     print(f"iknn_time execution time: {iknn_time:.2f} ms")
                     total_execution_time += iknn_time
                     print("CLASSIFICATION", classification)
+
+
+                    
 
                     knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
 
@@ -265,12 +269,12 @@ class SOD:
                     if np.sum(gate) == 1:
                         self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
 
-                        latest_features = detections_features[0][best_idx]
-                        latest_visibilities = detections_features[1][best_idx]
+                        # latest_features = detections_features[0][best_idx]
+                        # latest_visibilities = detections_features[1][best_idx]
                         ## For debugging Purposes #####################
-                        latest_template = detections_imgs[best_idx]
+                        # latest_template = detections_imgs[best_idx]
                         ###############################################
-                        self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
+                        # self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
                 else:
 
                     print("NO TRACKING")
@@ -293,6 +297,7 @@ class SOD:
                     total_execution_time += iknn_time
                     print("CLASSIFICATION", classification)
 
+                    # When Relying only on visual features, it is necessary to reidentfy consdiering all body parts to make a decision
                     knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
                     gate = knn_gate
 
@@ -315,7 +320,7 @@ class SOD:
                 elif not np.sum(gate) and not self.is_tracking:
                     self.reid_mode = True
                     return None
-                 
+                    
                 # If there is only valid detection 
                 elif np.sum(gate) == 1 and not self.is_tracking: 
                     # Extra conditions
@@ -331,6 +336,7 @@ class SOD:
 
             else: # Tracking mode
                 print("TRACKING MODE")
+                self.store_features = True
 
                 # Track using iou constant acceleration model or ay opencv tracker (KCF)
                 self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
@@ -347,7 +353,7 @@ class SOD:
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     self.reid_mode = True
                     return None
-    
+
                 self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
 
                 # This is to visualize the Mahalanobies Distances
@@ -374,6 +380,9 @@ class SOD:
                     distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
                     ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
 
+                    if  np.any(ious_to_target > 0.):
+                        self.store_features = False
+
                     if  np.any(ious_to_target > 0.2):
                         self.reid_mode = True
 
@@ -385,7 +394,7 @@ class SOD:
                     self.reid_mode = True                
                 ###############################################################################################################
                 
-                if not self.reid_mode: #self.store:
+                if self.store_features: #self.store:
 
                     # Incremental Learning
                     # Add some sort of feature learning/ prototype augmentation, etc

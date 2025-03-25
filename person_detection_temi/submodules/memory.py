@@ -12,18 +12,23 @@ class Bucket:
         self.samples_per_id = samples_per_identity
         self.distance_thr = thr
 
-        self.mean_prototypes_feats = torch.zeros((self.max_identities, 6, 512)).cuda()
-        self.mean_prototypes_vis = torch.zeros((self.max_identities, 6)).cuda()
+        self.part_num = 6
+        self.feats_num = 512
+        self.mean_prototypes_feats = torch.zeros((self.max_identities, self.part_num, self.feats_num)).cuda()
+        self.mean_prototypes_vis = torch.zeros((self.max_identities, self.part_num)).cuda()
         self.samples_per_id_num = [0 for i in range(self.max_identities)]
+        self.samples_per_part =  [0 for i in range(self.part_num)]
         self.active_prototypes_num = 0
         self.empty = True
 
-        self.gallery_feats = torch.zeros((self.max_identities, self.samples_per_id, 6, 512)).cuda()
-        self.gallery_vis = torch.zeros((self.max_identities, self.samples_per_id, 6)).to(torch.bool).cuda()
+        self.gallery_feats = torch.zeros((self.max_identities, self.samples_per_id, self.part_num, self.feats_num)).cuda()
+        self.gallery_vis = torch.zeros((self.max_identities, self.samples_per_id, self.part_num)).to(torch.bool).cuda()
 
         self.current_feats = None
         self.current_vis = None
 
+        ##########################################################################
+        # For Later Dbugging #####################################################
         self.templates_prototypes = np.zeros((self.max_identities, 3, 384, 128))
         self.prototype_means_feats_debug = []
         self.prototype_means_vis_debug = []
@@ -31,6 +36,9 @@ class Bucket:
         self.vis_debug = []
         self.existing_frames = []
         self.img_patches = []
+        # For Later Dbugging #####################################################
+        ##########################################################################
+
         #################################################
 
     def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = False):
@@ -64,7 +72,8 @@ class Bucket:
                                                 self.mean_prototypes_vis[:self.active_prototypes_num], 
                                                 distance_type="euclidean")
             
-
+            print("MEMBERSHIP", memership)
+            
             min_dist, min_idx = torch.min(memership, dim=0)
 
             min_dist, prototype_id = min_dist.item(), min_idx.item()
@@ -99,6 +108,7 @@ class Bucket:
                     self.gallery_vis[self.active_prototypes_num, 0] = vis
                     self.templates_prototypes[self.active_prototypes_num] = img_patch
                     self.active_prototypes_num += 1
+
 
             print("MEMBERSHIP", memership)
 
@@ -190,6 +200,9 @@ class Bucket:
 
         else:
             raise ValueError("Invalid distance_type. Choose 'cosine' or 'euclidean'.")
+        
+        print("Part Distances")
+        print(distances)
 
         # Mask out invalid distances
         distances = distances * valid_mask  # Zero out distances where either tensor is not visible

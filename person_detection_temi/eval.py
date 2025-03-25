@@ -57,11 +57,11 @@ def main():
 
     # Load model paths
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
-    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-pose.engine')
+    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.pt')
     feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
-    feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test.yaml')
+    feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
-    dataset = "lab_corridor"
+    dataset = "corridor1"
 
     rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
     template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
@@ -143,7 +143,7 @@ def main():
 
         # Show the image with bounding boxes
         cv2.imshow("Detection", rgb_img)
-        cv2.waitKey(3)  # Add small delay to update the window
+        cv2.waitKey(0)  # Add small delay to update the window
 
     # Save Bounding Boxes to File
     if save_boxes:
