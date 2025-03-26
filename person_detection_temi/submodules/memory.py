@@ -17,15 +17,22 @@ class Bucket:
         self.mean_prototypes_feats = torch.zeros((self.max_identities, self.part_num, self.feats_num)).cuda()
         self.mean_prototypes_vis = torch.zeros((self.max_identities, self.part_num)).cuda()
         self.samples_per_id_num = [0 for i in range(self.max_identities)]
-        self.samples_per_part =  [0 for i in range(self.part_num)]
         self.active_prototypes_num = 0
         self.empty = True
 
         self.gallery_feats = torch.zeros((self.max_identities, self.samples_per_id, self.part_num, self.feats_num)).cuda()
         self.gallery_vis = torch.zeros((self.max_identities, self.samples_per_id, self.part_num)).to(torch.bool).cuda()
 
+
+
+        self.distractor_feats = torch.zeros((self.max_samples, self.part_num, self.feats_num)).cuda()
+        self.distractor_vis = torch.zeros((self.max_samples, self.part_num)).to(torch.bool).cuda()
+        self.distractors_num = 0
+
+
         self.current_feats = None
         self.current_vis = None
+        self.labels_pos = None
 
         ##########################################################################
         # For Later Dbugging #####################################################
@@ -40,6 +47,48 @@ class Bucket:
         ##########################################################################
 
         #################################################
+
+
+    def store_distractor_feats(self, feats, vis):
+            """
+            Stores feature vectors, visibility masks, and labels into a fixed-size buffer.
+            Uses `torch.roll` to implement a circular buffer. If the batch size is larger than `max_samples`,
+            it discards excess samples.
+
+            Args:
+                feats (torch.Tensor): Feature tensor of shape [batch, 6, 512]
+                vis (torch.Tensor): Visibility tensor of shape [batch, 6] (bool)
+                label (torch.Tensor): Labels tensor of shape [batch] (bool)
+            """
+            new_feats_num = feats.shape[0]
+
+            # If batch is larger than max_samples, keep only the most recent samples
+            if new_feats_num > self.max_samples:
+                feats = feats[-self.max_samples:]  # Keep only last `max_samples` samples
+                vis = vis[-self.max_samples:]
+                new_feats_num = self.max_samples  # Adjust count
+
+            if self.distractors_num < self.max_samples:
+                # Append new samples normally
+                available_space = self.max_samples - self.distractors_num
+                num_to_store = min(new_feats_num, available_space)
+
+                self.distractor_feats[self.distractors_num:self.distractors_num + num_to_store] = feats[:num_to_store]
+                self.distractor_vis[self.distractors_num:self.distractors_num + num_to_store] = vis[:num_to_store]
+
+                self.distractors_num += num_to_store
+
+            else:
+                # Use torch.roll to shift old data and insert new samples at the beginning
+                self.distractor_feats = torch.roll(self.distractor_feats, shifts=-new_feats_num, dims=0)
+                self.distractor_vis = torch.roll(self.distractor_vis, shifts=-new_feats_num, dims=0)
+
+                # Overwrite the first `new_feats_num` positions with new data
+                self.distractor_feats[-new_feats_num:] = feats
+                self.distractor_vis[-new_feats_num:] = vis
+
+            print("Number of distractors", self.distractors_num)
+
 
     def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = False):
         """
@@ -108,6 +157,9 @@ class Bucket:
                     self.gallery_vis[self.active_prototypes_num, 0] = vis
                     self.templates_prototypes[self.active_prototypes_num] = img_patch
                     self.active_prototypes_num += 1
+                else:
+                    pass
+
 
 
             print("MEMBERSHIP", memership)
@@ -121,15 +173,6 @@ class Bucket:
 
             self.mean_prototypes_feats[:self.active_prototypes_num], self.mean_prototypes_vis[:self.active_prototypes_num] = self.compute_avg_features(self.gallery_feats, self.gallery_vis, self.active_prototypes_num, self.samples_per_id_num)
 
-        #  This code is to retrieve all the valid existing feature sets and visibility scores consdiering the availavbility of these
-        valid_samples_feats = [self.gallery_feats[i, :self.samples_per_id_num[i]] for i in range(self.active_prototypes_num)]
-        valid_samples_vis = [self.gallery_vis[i, :self.samples_per_id_num[i]] for i in range(self.active_prototypes_num)]
-        self.current_feats = torch.cat(valid_samples_feats, dim=0)
-        self.current_vis = torch.cat(valid_samples_vis, dim=0)
-
-        print("self.current_feats", self.current_feats.shape)
-        print("self.current_vis", self.current_vis.shape)
-        print("active_prototypes_num", self.active_prototypes_num)
 
         if debug:
             prototype_means_feats_np = self.mean_prototypes_feats[:self.active_prototypes_num].cpu().numpy()
@@ -144,11 +187,29 @@ class Bucket:
             self.vis_debug.append(vis_np)
             self.existing_frames.append(counter)
 
-    def get_features(self):
-        return self.current_feats
-    
-    def get_vis(self):
-        return self.current_vis
+
+    def get(self):
+        #  This code is to retrieve all the valid existing feature sets and visibility scores consdiering the availavbility of these
+        valid_samples_feats = [self.gallery_feats[i, :self.samples_per_id_num[i]] for i in range(self.active_prototypes_num)]
+        valid_samples_vis = [self.gallery_vis[i, :self.samples_per_id_num[i]] for i in range(self.active_prototypes_num)]
+        pos_feats = torch.cat(valid_samples_feats, dim=0)
+        pos_vis = torch.cat(valid_samples_vis, dim=0)
+        pos_labels = torch.ones(pos_vis.shape[0]).cuda()
+
+        neg_feats = self.distractor_feats[:self.distractors_num]
+        neg_vis = self.distractor_vis[:self.distractors_num]
+        neg_labels = torch.zeros(self.distractors_num).cuda()
+
+        total_feats = torch.cat((pos_feats, neg_feats), dim=0)
+        total_vis = torch.cat((pos_vis, neg_vis), dim=0)
+        total_labels = torch.cat((pos_labels, neg_labels))
+
+        print("self.current_feats", pos_feats.shape)
+        print("self.current_vis", pos_vis.shape)
+        print("active_prototypes_num", self.active_prototypes_num)
+
+        return total_feats, total_vis, total_labels
+
     
     def get_samples_num(self):
         return np.sum(self.samples_per_id_num).item()

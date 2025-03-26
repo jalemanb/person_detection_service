@@ -44,11 +44,10 @@ class SOD:
         self.tracker = BboxKalmanFilter()
         self.man_kf = None
         self.cov_kf = None
-        self.border_thr = 10
 
-        self.reid_thr = 1.0
+        self.reid_thr = 0.8
 
-        self.memory_bucket = Bucket(max_identities = 5, samples_per_identity = 20)
+        self.memory_bucket = Bucket(max_identities = 10, samples_per_identity = 20, thr = 0.5)
         self.debug = False
         self.bucket_counter = 0
         self.store_features = True
@@ -82,14 +81,15 @@ class SOD:
             binary_mask (torch.Tensor): Binary mask of shape [k, batch, 6] indicating which top-k distances are within threshold
         """
 
-        A = self.memory_bucket.get_features()
-        visibility_A = self.memory_bucket.get_vis()
+        A, visibility_A, labels_A = self.memory_bucket.get()
+
         B = feats
         visibility_B = feats_vis
 
         print("visibility_B")
         print(visibility_B)
-        k = int(np.minimum(self.memory_bucket.get_samples_num(), np.sqrt(self.memory_bucket.get_max_samples())))
+        # k = int(np.minimum(self.memory_bucket.get_samples_num(), np.sqrt(self.memory_bucket.get_max_samples())))
+        k = int(np.minimum(self.memory_bucket.get_samples_num(), 10))
 
         N, parts, dim = A.shape
         batch = B.shape[0]
@@ -117,14 +117,25 @@ class SOD:
         # Retrieve the k smallest distances along dim=0 (N dimension)
         top_k_values, top_k_indices = torch.topk(distance, k, dim=0, largest=False)  # [k, batch, 6]
 
+        # Retrieve the corresponding labels for the k nearest neighbors This is the knn-prediction
+        top_k_labels = labels_A[top_k_indices]  # Shape [k, batch, 6], labels for nearest N indices
+
+        print("top_k_values")
         print(top_k_values)
+
 
         # Create binary mask based on threshold
         binary_mask = top_k_values <= threshold  # [k, batch, 6]
-        # binary_mask = (top_k_values <= threshold) | (top_k_values > 10)
+        #binary_mask = (top_k_values <= threshold) | (top_k_values > 10)
+
+        # Apply threshold influence: Set labels to zero where distances exceed the threshold
+        valid_labels = top_k_labels * binary_mask  # Zero out labels where threshold is exceeded
+
+           
+
 
         # Perform classification by majority vote (sum up valid labels and classify based on majority vote)
-        classification = (binary_mask.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
+        classification = (valid_labels.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
 
         return classification.T
 
@@ -193,7 +204,7 @@ class SOD:
 
             # Measure time for `masked_detections`
             start_time = time.time()
-            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.3)
+            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.6)
             end_time = time.time()
             masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
             print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -203,6 +214,9 @@ class SOD:
             if not (len(detections) > 0):
                 self.reid_mode = True
                 # self.is_tracking = False
+                # Consider predicting in here
+                if self.is_tracking:
+                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                 return None
             
             # YOLO Detection Results
@@ -246,15 +260,12 @@ class SOD:
 
                     # Measure time for `iknn_time` - Classify the features with KNN
                     start_time = time.time()
-                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=self.reid_thr)
                     end_time = time.time()
                     iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     print(f"iknn_time execution time: {iknn_time:.2f} ms")
                     total_execution_time += iknn_time
                     print("CLASSIFICATION", classification)
-
-
-                    
 
                     knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
 
@@ -275,6 +286,7 @@ class SOD:
                         # latest_template = detections_imgs[best_idx]
                         ###############################################
                         # self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
+              
                 else:
 
                     print("NO TRACKING")
@@ -290,7 +302,7 @@ class SOD:
 
                     # Measure time for `iknn_time` - Classify the features with KNN
                     start_time = time.time()
-                    classification = self.iknn(detections_features[0], detections_features[1], threshold=0.5)
+                    classification = self.iknn(detections_features[0], detections_features[1], threshold=self.reid_thr)
                     end_time = time.time()
                     iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     print(f"iknn_time execution time: {iknn_time:.2f} ms")
@@ -344,17 +356,27 @@ class SOD:
 
                 # Association Based on Mahalanobies Distance
                 mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
-                best_match_idx = np.argmin(mb_dist)
+
+                print("mb_dist", mb_dist)
+                print("mb_dist.shape", mb_dist.shape)
+
+                number_det = len(mb_dist)
+
+                if number_det < 2:
+                    best_match_idx = 0 #np.argmin(mb_dist)
+                else:
+                    best_match_idx, second_best_idx = np.argsort(mb_dist)[:2]
 
                 target_bbox = bboxes[best_match_idx]
 
                 # If the Association Metric (Mahalanobies Distance) is greater than the gate then return
+                # and reidentify solely based on the appearance
                 if mb_dist[best_match_idx] > chi2inv95[4]:
                     self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                     self.reid_mode = True
                     return None
-
-                self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
+                else:
+                    self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
 
                 # This is to visualize the Mahalanobies Distances
                 ################### VISUALIZATION #####################
@@ -371,7 +393,7 @@ class SOD:
 
                 # Check if bounding boxes are too close to the target
                 # if so return nothing and change to reid_mode
-                if len(bboxes) > 1:
+                if number_det > 1:
                     # See one time steps into the futre if there will be an intersection
                     fut_mean, fut_cov = self.tracker.predict(self.mean_kf, self.cov_kf)
                     # fut_mean, fut_cov = self.tracker.predict(fut_mean, fut_cov)
@@ -380,31 +402,43 @@ class SOD:
                     distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
                     ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
 
-                    if  np.any(ious_to_target > 0.):
-                        self.store_features = False
+                    # if  np.any(ious_to_target > 0.):
+                    #     self.store_features = False
 
                     if  np.any(ious_to_target > 0.2):
+                        print("Too close to obstacle")
                         self.reid_mode = True
+                        self.store_features = False
+
 
                 tx1, ty1, tx2, ty2 = target_bbox
 
-                # check if the target bbox is close to the image edges 
+                # check if the target bbox is out from the image plane
                 # if so return nothing and change to reid_mode
-                if tx1 < self.border_thr or tx2 > img_rgb.shape[1] - self.border_thr:
+                if tx2 < 0 or tx1 > img_rgb.shape[1] :
                     self.reid_mode = True                
                 ###############################################################################################################
                 
-                if self.store_features: #self.store:
+                # Store features only when the target person is clearly identified and not occluded by any other distractor box
 
+                if self.store_features: 
                     # Incremental Learning
-                    # Add some sort of feature learning/ prototype augmentation, etc
 
                     # Measure time for `feature_extraction and feature storing` - Extract features to all subimages
                     start_time = time.time()
 
-                    latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
+                    if number_det < 2:
 
-                    self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy(), debug = self.debug)
+                        latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
+                        self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy(), debug = self.debug)
+                    
+                    else:
+                        valid_idxs.append(second_best_idx)
+                        latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
+                        
+                        self.memory_bucket.store_feats(latest_features[0][0], latest_features[1][0], debug = False)
+                        self.memory_bucket.store_distractor_feats(latest_features[0][[1]], latest_features[1][1])
+                        valid_idxs = [valid_idxs[0]]
 
                     end_time = time.time()
                     incremental_time = (end_time - start_time) * 1000  # Convert to milliseconds

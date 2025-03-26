@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from ament_index_python.packages import get_package_share_directory
 from person_detection_temi.submodules.SOD import SOD
+import time
 
 
 def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=False):
@@ -61,18 +62,39 @@ def main():
     feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
-    dataset = "corridor1"
+    ### OCL Datasets ####################################################
+    dataset = "corridor2"
+    dataset = "ocl_demo2"
+    dataset = "lab_corridor"
 
     rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
     template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+    ### OCL Datasets ####################################################
+
+
+    ### Stotos Lab Datasets ####################################################
+    dataset = "sidewalk"
+
+    rgb_dir = f"/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed/{dataset}/left/"
+    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.jpg')
+    ### Stotos Lab Datasets ####################################################
+
+
+    ### Robocup Datasets ####################################################
+    dataset = "crowd3"
+
+    rgb_dir = f"/home/enrique/Videos/crowds/{dataset}/"
+    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+    ### Robocup Datasets ####################################################
+
+
+
 
     # Load Template Image
     # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
 
-
     # template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
     template_img = cv2.imread(template_img_path)
-
 
     # Setup Detection Pipeline
     model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
@@ -94,7 +116,7 @@ def main():
 
     # Get all RGB images sorted by numeric order
     rgb_images = sorted(
-        [f for f in os.listdir(rgb_dir) if f.startswith('frame') and f.endswith('.png')],
+        [f for f in os.listdir(rgb_dir) if (f.startswith('frame') or f.startswith('rgb') or f.startswith('left')) and (f.endswith('.png') or f.endswith('.jpg'))],
         key=lambda x: int(''.join(filter(str.isdigit, x)))
     )
 
@@ -118,7 +140,14 @@ def main():
         depth_img = np.random.randint(0, 256, (height, width), dtype=np.uint8)
 
         # Perform Detection
+        start_time = time.time()
         results = model.detect(rgb_img, depth_img)
+        end_time = time.time()
+
+        # Compute execution time in milliseconds
+        execution_time_s = (end_time - start_time) 
+
+        print(f"Execution Time: {execution_time_s:.3f} s")
 
         if results is not None:
 
@@ -143,13 +172,13 @@ def main():
 
         # Show the image with bounding boxes
         cv2.imshow("Detection", rgb_img)
-        cv2.waitKey(0)  # Add small delay to update the window
+        cv2.waitKey(3)  # Add small delay to update the window
 
     # Save Bounding Boxes to File
     if save_boxes:
         write_bounding_boxes_to_file(bboxes, results_bboxes_file, append=False)
 
-    if save_bucket:
+    if save_bucket: 
         model.memory_bucket.save("/home/enrique/bucket.npz")
 
     # Close OpenCV windows
