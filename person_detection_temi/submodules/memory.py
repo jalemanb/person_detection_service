@@ -23,12 +23,9 @@ class Bucket:
         self.gallery_feats = torch.zeros((self.max_identities, self.samples_per_id, self.part_num, self.feats_num)).cuda()
         self.gallery_vis = torch.zeros((self.max_identities, self.samples_per_id, self.part_num)).to(torch.bool).cuda()
 
-
-
         self.distractor_feats = torch.zeros((self.max_samples, self.part_num, self.feats_num)).cuda()
         self.distractor_vis = torch.zeros((self.max_samples, self.part_num)).to(torch.bool).cuda()
         self.distractors_num = 0
-
 
         self.current_feats = None
         self.current_vis = None
@@ -48,6 +45,18 @@ class Bucket:
 
         #################################################
 
+
+    def gaussian_mixture_pdf(N, sigma1=2.0, sigma2=2.0):
+        x = np.arange(N)
+        mu1 = 0.25 * (N - 1)
+        mu2 = 0.75 * (N - 1)
+
+        g1 = np.exp(-0.5 * ((x - mu1) / sigma1) ** 2)
+        g2 = np.exp(-0.5 * ((x - mu2) / sigma2) ** 2)
+        pdf = g1 + g2
+        pdf /= pdf.sum()  # Normalize to make it a valid probability distribution
+
+        return pdf
 
     def store_distractor_feats(self, feats, vis):
             """
@@ -89,7 +98,6 @@ class Bucket:
 
             print("Number of distractors", self.distractors_num)
 
-
     def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = False):
         """
         Stores feature vectors and visibility masks into a fixed-size buffer.
@@ -109,11 +117,12 @@ class Bucket:
             self.mean_prototypes_vis[0] = vis
             self.gallery_feats[0, 0] = feats
             self.gallery_vis[0, 0] = vis
-            self.samples_per_id_num[0] += 1 
-            self.active_prototypes_num += 1
+            self.samples_per_id_num[0] = 1 
+            self.active_prototypes_num = 1
             self.templates_prototypes[0] = img_patch
             self.empty = False
         else:
+
 
             memership = self.compute_mean_distance(feats, 
                                                 self.mean_prototypes_feats[:self.active_prototypes_num], 
@@ -123,7 +132,7 @@ class Bucket:
             
             print("MEMBERSHIP", memership)
             
-            min_dist, min_idx = torch.min(memership, dim=0)
+            min_dist, min_idx = torch.min(memership, dim=1)
 
             min_dist, prototype_id = min_dist.item(), min_idx.item()
 
@@ -149,17 +158,59 @@ class Bucket:
                 # If the smallest distance to all the existing prototypes is larger than a given threshold then add a new mean prototype
                 # If full then reset the mean rpotype withtthe least features or randomly choose one to be deleted 
                 if self.active_prototypes_num < self.max_identities:
-                    # Adding a new mean prototype
-                    self.samples_per_id_num[self.active_prototypes_num] += 1 
-                    self.mean_prototypes_feats[self.active_prototypes_num] = feats
-                    self.mean_prototypes_vis[self.active_prototypes_num] = vis
-                    self.gallery_feats[self.active_prototypes_num, 0] = feats
-                    self.gallery_vis[self.active_prototypes_num, 0] = vis
-                    self.templates_prototypes[self.active_prototypes_num] = img_patch
-                    self.active_prototypes_num += 1
-                else:
-                    pass
 
+                    id_with_least = np.argmin(self.samples_per_id_num[:self.active_prototypes_num])
+
+                    # Change so that it selects the one with the smallest number 
+                    if self.samples_per_id_num[id_with_least] < self.samples_per_id:
+                        # if a new prototype is gonna take place but the previous prototype is not full, 
+                        # then it mightjust be noise or a very short time appearance occurence, in such case substitue that occurrence with the new prorotype
+                        self.samples_per_id_num[id_with_least] = 1 
+                        self.mean_prototypes_feats[id_with_least] = feats
+                        self.mean_prototypes_vis[id_with_least] = vis
+                        self.gallery_feats[id_with_least, 0] = feats
+                        self.gallery_vis[id_with_least, 0] = vis
+                        if debug:
+                            self.templates_prototypes[id_with_least] = img_patch
+                    else: 
+                        # Adding a new mean prototype
+                        self.samples_per_id_num[self.active_prototypes_num] += 1 
+                        self.mean_prototypes_feats[self.active_prototypes_num] = feats
+                        self.mean_prototypes_vis[self.active_prototypes_num] = vis
+                        self.gallery_feats[self.active_prototypes_num, 0] = feats
+                        self.gallery_vis[self.active_prototypes_num, 0] = vis
+                        if debug:
+                            self.templates_prototypes[self.active_prototypes_num] = img_patch
+                        self.active_prototypes_num += 1
+                else:
+                    id_with_least = np.argmin(self.samples_per_id_num[:self.active_prototypes_num])
+
+                    # Change so that it selects the one with the smallest number 
+                    if self.samples_per_id_num[id_with_least] < self.samples_per_id:
+                        # if a new prototype is gonna take place but the previous prototype is not full, 
+                        # then it mightjust be noise or a very short time appearance occurence, in such case substitue that occurrence with the new prorotype
+                        self.samples_per_id_num[id_with_least] = 1 
+                        self.mean_prototypes_feats[id_with_least] = feats
+                        self.mean_prototypes_vis[id_with_least] = vis
+                        self.gallery_feats[id_with_least, 0] = feats
+                        self.gallery_vis[id_with_least, 0] = vis
+                        if debug:
+                            self.templates_prototypes[id_with_least] = img_patch
+                    else:
+                        # Replace the id prototypes, its features, visibilities, etc. based on how many nn have 
+                        # Highly isolated prototypes are less likely to be replaced
+                        distances_matrix = self.compute_mean_distance(self.mean_prototypes_feats, self.mean_prototypes_feats, self.mean_prototypes_vis, self.mean_prototypes_vis, "euclidean")
+                        mask = (distances_matrix < self.distance_thr)
+                        mask.fill_diagonal_(False)  # Ignore self-distances
+                        ids_nn_count = mask.sum(dim=1).to(torch.float32)
+                        replacement_prob = F.softmax(ids_nn_count, dim=0).cpu().numpy()
+                        replacement_idx = np.random.choice(len(replacement_prob), p=replacement_prob)
+
+                        self.samples_per_id_num[replacement_idx] = 1 
+                        self.mean_prototypes_feats[replacement_idx] = feats
+                        self.mean_prototypes_vis[replacement_idx] = vis
+                        self.gallery_feats[replacement_idx, 0] = feats
+                        self.gallery_vis[replacement_idx, 0] = vis
 
 
             print("MEMBERSHIP", memership)
@@ -170,6 +221,7 @@ class Bucket:
 
             # Update Mean prototype representation
             # Update visibility representation for each mean prototype
+
 
             self.mean_prototypes_feats[:self.active_prototypes_num], self.mean_prototypes_vis[:self.active_prototypes_num] = self.compute_avg_features(self.gallery_feats, self.gallery_vis, self.active_prototypes_num, self.samples_per_id_num)
 
@@ -221,63 +273,114 @@ class Bucket:
     def save(self, file_path):
         self.save_frames_data(file_path)
 
+
     def compute_mean_distance(self, tensor1, tensor2, visibility1, visibility2, distance_type="cosine"):
         """
-        Computes the mean distance (cosine or Euclidean) between corresponding elements in tensor1 and tensor2, 
-        considering the visibility masks.
+        Generalized pairwise distance computation between tensor1 and tensor2, handling different batch sizes.
 
         Args:
-            tensor1 (torch.Tensor): Tensor of shape [batch, 6, 512].
-            tensor2 (torch.Tensor): Tensor of shape [batch, 6, 512].
-            visibility1 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor1.
-            visibility2 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor2.
-            distance_type (str): Type of distance to compute - "cosine" or "euclidean".
+            tensor1 (Tensor): Shape [B1, P, F]
+            tensor2 (Tensor): Shape [B2, P, F]
+            visibility1 (Tensor): Shape [B1, P]
+            visibility2 (Tensor): Shape [B2, P]
+            distance_type (str): 'cosine' or 'euclidean'
 
         Returns:
-            torch.Tensor: The mean distance computed across all valid elements.
+            Tensor: Shape [B1, B2] mean distances between all tensor1[i] and tensor2[j]
         """
+        B1, P, F = tensor1.shape
+        B2 = tensor2.shape[0]
 
-        # Ensure visibility masks are boolean
-        visibility1 = visibility1.bool()
-        visibility2 = visibility2.bool()
+        # Expand tensors for broadcasting
+        t1 = tensor1.unsqueeze(1).expand(B1, B2, P, F)       # [B1, B2, P, F]
+        t2 = tensor2.unsqueeze(0).expand(B1, B2, P, F)       # [B1, B2, P, F]
+        
+        vis1 = visibility1.unsqueeze(1).expand(B1, B2, P).to(torch.bool)    # [B1, B2, P]
+        vis2 = visibility2.unsqueeze(0).expand(B1, B2, P).to(torch.bool)    # [B1, B2, P]
 
-        # Compute joint visibility: only consider distances where both tensors are visible
-        valid_mask = visibility1 & visibility2  # Shape: [batch, 6]
+        valid_mask = vis1 & vis2                             # [B1, B2, P]
 
         if distance_type == "cosine":
-            # Normalize vectors for cosine similarity
-            tensor1_norm = F.normalize(tensor1, p=2, dim=-1)
-            tensor2_norm = F.normalize(tensor2, p=2, dim=-1)
-
-            # Compute cosine similarity
-            cos_sim = torch.sum(tensor1_norm * tensor2_norm, dim=-1)  # Shape: [batch, 6]
-
-            # Convert similarity to distance
-            distances = 1 - cos_sim  # Shape: [batch, 6]
+            t1_norm = F.normalize(t1, p=2, dim=-1)
+            t2_norm = F.normalize(t2, p=2, dim=-1)
+            cos_sim = torch.sum(t1_norm * t2_norm, dim=-1)   # [B1, B2, P]
+            distances = 1 - cos_sim                          # [B1, B2, P]
 
         elif distance_type == "euclidean":
-            # Compute Euclidean distance
-            distances = torch.norm(tensor1 - tensor2, p=2, dim=-1)  # Shape: [batch, 6]
+            distances = torch.norm(t1 - t2, p=2, dim=-1)      # [B1, B2, P]
 
         else:
             raise ValueError("Invalid distance_type. Choose 'cosine' or 'euclidean'.")
-        
-        print("Part Distances")
+
+        print("Part Distance")
         print(distances)
 
-        # Mask out invalid distances
-        distances = distances * valid_mask  # Zero out distances where either tensor is not visible
+        distances = distances * valid_mask                   # zero out invalid parts
 
-        # Compute the mean only over valid entries
-        valid_counts = valid_mask.sum(dim=-1).float()  # Count valid distances per batch
-
-        # Avoid division by zero (replace 0 with 1 to avoid NaNs)
+        valid_counts = valid_mask.sum(dim=-1).float()        # [B1, B2]
         valid_counts = torch.where(valid_counts > 0, valid_counts, torch.tensor(1.0, device=valid_counts.device))
 
-        # Compute the mean distance per batch
-        mean_distances = distances.sum(dim=-1) / valid_counts  # Shape: [batch]
+        mean_distances = distances.sum(dim=-1) / valid_counts  # [B1, B2]
+        
+        return mean_distances  # shape: [B1, B2]
 
-        return mean_distances
+    # def compute_mean_distance(self, tensor1, tensor2, visibility1, visibility2, distance_type="cosine"):
+    #     """
+    #     Computes the mean distance (cosine or Euclidean) between corresponding elements in tensor1 and tensor2, 
+    #     considering the visibility masks.
+
+    #     Args:
+    #         tensor1 (torch.Tensor): Tensor of shape [batch, 6, 512].
+    #         tensor2 (torch.Tensor): Tensor of shape [batch, 6, 512].
+    #         visibility1 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor1.
+    #         visibility2 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor2.
+    #         distance_type (str): Type of distance to compute - "cosine" or "euclidean".
+
+    #     Returns:
+    #         torch.Tensor: The mean distance computed across all valid elements.
+    #     """
+
+    #     # Ensure visibility masks are boolean
+    #     visibility1 = visibility1.bool()
+    #     visibility2 = visibility2.bool()
+
+    #     # Compute joint visibility: only consider distances where both tensors are visible
+    #     valid_mask = visibility1 & visibility2  # Shape: [batch, 6]
+
+    #     if distance_type == "cosine":
+    #         # Normalize vectors for cosine similarity
+    #         tensor1_norm = F.normalize(tensor1, p=2, dim=-1)
+    #         tensor2_norm = F.normalize(tensor2, p=2, dim=-1)
+
+    #         # Compute cosine similarity
+    #         cos_sim = torch.sum(tensor1_norm * tensor2_norm, dim=-1)  # Shape: [batch, 6]
+
+    #         # Convert similarity to distance
+    #         distances = 1 - cos_sim  # Shape: [batch, 6]
+
+    #     elif distance_type == "euclidean":
+    #         # Compute Euclidean distance
+    #         distances = torch.norm(tensor1 - tensor2, p=2, dim=-1)  # Shape: [batch, 6]
+
+    #     else:
+    #         raise ValueError("Invalid distance_type. Choose 'cosine' or 'euclidean'.")
+        
+    #     print("Part Distances")
+    #     print(distances)
+
+    #     # Mask out invalid distances
+    #     distances = distances * valid_mask  # Zero out distances where either tensor is not visible
+
+    #     # Compute the mean only over valid entries
+    #     valid_counts = valid_mask.sum(dim=-1).float()  # Count valid distances per batch
+
+    #     # Avoid division by zero (replace 0 with 1 to avoid NaNs)
+    #     valid_counts = torch.where(valid_counts > 0, valid_counts, torch.tensor(1.0, device=valid_counts.device))
+
+    #     # Compute the mean distance per batch
+    #     mean_distances = distances.sum(dim=-1) / valid_counts  # Shape: [batch]
+
+    #     return mean_distances
 
     def compute_avg_features(self, features, visibilities, current_valid_ids, num_samples_per_id):
         """

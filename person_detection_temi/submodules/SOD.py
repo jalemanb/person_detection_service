@@ -45,7 +45,7 @@ class SOD:
         self.man_kf = None
         self.cov_kf = None
 
-        self.reid_thr = 0.8
+        self.reid_thr = 0.7
 
         self.memory_bucket = Bucket(max_identities = 10, samples_per_identity = 20, thr = 0.5)
         self.debug = False
@@ -130,8 +130,6 @@ class SOD:
 
         # Apply threshold influence: Set labels to zero where distances exceed the threshold
         valid_labels = top_k_labels * binary_mask  # Zero out labels where threshold is exceeded
-
-           
 
 
         # Perform classification by majority vote (sum up valid labels and classify based on majority vote)
@@ -267,7 +265,15 @@ class SOD:
                     total_execution_time += iknn_time
                     print("CLASSIFICATION", classification)
 
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
+                    if len(within_mb) > 1:
+
+                        part_gates = torch.sum(classification & detections_features[1].T, dim=0)
+                        max_part_gate = torch.max(part_gates)
+
+                        knn_gate = (part_gates == max_part_gate).cpu().numpy()
+                    else:
+                        knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
+
 
                     mb_dist = np.array(mb_dist)[within_mb]
                     mb_gate = mb_dist < chi2inv95[4]
@@ -402,13 +408,13 @@ class SOD:
                     distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
                     ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
 
-                    # if  np.any(ious_to_target > 0.):
-                    #     self.store_features = False
+                    if  np.any(ious_to_target > 0.):
+                        self.store_features = False
 
-                    if  np.any(ious_to_target > 0.2):
+                    if  np.any(ious_to_target > 0.):
                         print("Too close to obstacle")
                         self.reid_mode = True
-                        self.store_features = False
+                        # self.store_features = False
 
 
                 tx1, ty1, tx2, ty2 = target_bbox
@@ -421,7 +427,7 @@ class SOD:
                 
                 # Store features only when the target person is clearly identified and not occluded by any other distractor box
 
-                if self.store_features: 
+                if self.store_features and not self.reid_mode: 
                     # Incremental Learning
 
                     # Measure time for `feature_extraction and feature storing` - Extract features to all subimages
@@ -436,8 +442,8 @@ class SOD:
                         valid_idxs.append(second_best_idx)
                         latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
                         
-                        self.memory_bucket.store_feats(latest_features[0][0], latest_features[1][0], debug = False)
-                        self.memory_bucket.store_distractor_feats(latest_features[0][[1]], latest_features[1][1])
+                        self.memory_bucket.store_feats(latest_features[0][[0]], latest_features[1][[0]], debug = False)
+                        self.memory_bucket.store_distractor_feats(latest_features[0][[1]], latest_features[1][[1]])
                         valid_idxs = [valid_idxs[0]]
 
                     end_time = time.time()

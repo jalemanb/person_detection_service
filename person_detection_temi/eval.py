@@ -48,8 +48,8 @@ def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=Fa
         for row in rows_array:
             f.write(' '.join(map(str, row)) + '\n')
 
+def evaluation(dataset):
 
-def main():
     print("Time to evaluate")
 
     ########################################################################################################
@@ -63,31 +63,33 @@ def main():
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
     ### OCL Datasets ####################################################
-    dataset = "corridor2"
-    dataset = "ocl_demo2"
-    dataset = "lab_corridor"
+    ocl_datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
+    robot_datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
 
-    rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
-    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+    # dataset = "room"
+    # dataset = "ocl_demo2"
+    # dataset = "corridor2"
+
+    if dataset  in ocl_datasets:
+        rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
+        template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### OCL Datasets ####################################################
 
 
     ### Stotos Lab Datasets ####################################################
-    dataset = "sidewalk"
-
-    rgb_dir = f"/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed/{dataset}/left/"
-    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.jpg')
+    # dataset = "walking_outdoor"
+    if dataset in robot_datasets:
+        rgb_dir = f"/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed/{dataset}/left/"
+        template_img_path = os.path.join(rgb_dir+f'template_{dataset}.jpg')
     ### Stotos Lab Datasets ####################################################
 
 
     ### Robocup Datasets ####################################################
-    dataset = "crowd3"
+    # dataset = "crowd3"
 
-    rgb_dir = f"/home/enrique/Videos/crowds/{dataset}/"
-    template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+    # rgb_dir = f"/home/enrique/Videos/crowds/{dataset}/"
+    # template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### Robocup Datasets ####################################################
-
-
 
 
     # Load Template Image
@@ -109,9 +111,9 @@ def main():
     # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
     # rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
 
-    results_bboxes_file = "/media/enrique/Extreme SSD/ocl_demo/ocl_results.txt"
+    results_bboxes_file = rgb_dir + f"{dataset}_bboxes_results.txt"
 
-    save_boxes = False
+    save_boxes = True
     save_bucket = False
 
     # Get all RGB images sorted by numeric order
@@ -184,6 +186,15 @@ def main():
     # Close OpenCV windows
     cv2.destroyAllWindows()
 
+def main():
+
+    datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
+    datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    for dataset in datasets:
+        evaluation(dataset)
+
+
 
 if __name__ == '__main__':
-    main()
+
+        main()
