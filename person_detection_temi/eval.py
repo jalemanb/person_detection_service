@@ -7,6 +7,24 @@ from ament_index_python.packages import get_package_share_directory
 from person_detection_temi.submodules.SOD import SOD
 import time
 
+save_boxes = True
+save_bucket = False
+save_time = True
+show_img = True
+
+
+def save_execution_times(times, filename):
+    """
+    Save a list of execution times to a file in 'idx execution_time' format.
+
+    Parameters:
+    - times: list or numpy array of execution times.
+    - filename: output file path.
+    """
+    times = np.array(times)
+    idx = np.arange(len(times))
+    data = np.column_stack((idx, times))
+    np.savetxt(filename, data, fmt='%d %.8f')
 
 def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=False):
     """
@@ -59,6 +77,7 @@ def evaluation(dataset):
     # Load model paths
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
     yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.pt')
+    bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
     feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
@@ -99,12 +118,13 @@ def evaluation(dataset):
     template_img = cv2.imread(template_img_path)
 
     # Setup Detection Pipeline
-    model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
+    model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path, tracker_system_path=bytetrack_path)
     model.to(device)
 
     # Initialize the template
     model.template_update(template_img)
     ########################################################################################################
+    model.set_track_id(1)
 
     # Paths
     # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
@@ -112,9 +132,8 @@ def evaluation(dataset):
     # rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
 
     results_bboxes_file = rgb_dir + f"{dataset}_bboxes_results.txt"
+    results_times_file = rgb_dir + f"{dataset}_times_results.txt"
 
-    save_boxes = True
-    save_bucket = False
 
     # Get all RGB images sorted by numeric order
     rgb_images = sorted(
@@ -123,6 +142,7 @@ def evaluation(dataset):
     )
 
     bboxes = []
+    times = []
 
     print(rgb_images)
 
@@ -134,7 +154,7 @@ def evaluation(dataset):
         print(rgb_img_path)
 
         rgb_img = cv2.imread(rgb_img_path, cv2.IMREAD_COLOR)  # Read RGB as BGR8
-        rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
+        # rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
 
         height, width, _ = rgb_img.shape  # Get dimensions
 
@@ -149,36 +169,57 @@ def evaluation(dataset):
         # Compute execution time in milliseconds
         execution_time_s = (end_time - start_time) 
 
+        if save_time:
+            times.append(execution_time_s)
+            
         print(f"Execution Time: {execution_time_s:.3f} s")
 
         if results is not None:
 
             person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
 
-            print("BOXES", bbox)
+            for i in range(len(bbox)):
 
+                x1, y1, x2, y2 = map(int, bbox[i])
+
+
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Green Box
+
+                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
             if len(valid_idxs) != 0 :
-                detected_bboxes = bbox[valid_idxs].tolist()
+                if save_boxes:
+                    bboxes.append(bbox[valid_idxs].tolist())
 
                 # **Draw Bounding Boxes on the Image**
-                for i, box in enumerate(detected_bboxes):
-                    x1, y1, x2, y2 = map(int, box)
-
-                    # Draw rectangle on the image
+                for i, valid_id in enumerate(valid_idxs):
+                    id = tracked_ids[valid_id]
+                    
+                    x1, y1, x2, y2 = map(int, bbox[valid_id])
                     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green Box
 
                     # Put confidence score (if available)
                     if conf is not None and len(conf) > i:
                         cv2.putText(rgb_img, f"{conf[valid_idxs[i]]:.2f}", (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            else:
+                if save_boxes:
+                    bboxes.append(None)
+        else:
+            bboxes.append(None)
 
         # Show the image with bounding boxes
-        cv2.imshow("Detection", rgb_img)
-        cv2.waitKey(3)  # Add small delay to update the window
+        if show_img:
+            cv2.imshow("Detection", rgb_img)
+            cv2.waitKey(3)  # Add small delay to update the window
 
     # Save Bounding Boxes to File
     if save_boxes:
         write_bounding_boxes_to_file(bboxes, results_bboxes_file, append=False)
+
+    if save_time:
+        save_execution_times(times, results_times_file)
 
     if save_bucket: 
         model.memory_bucket.save("/home/enrique/bucket.npz")
@@ -188,13 +229,12 @@ def evaluation(dataset):
 
 def main():
 
-    datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
-    datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
+    # datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    # datasets = ["ocl_demo2"]
     for dataset in datasets:
         evaluation(dataset)
 
-
-
 if __name__ == '__main__':
-
-        main()
+    main()

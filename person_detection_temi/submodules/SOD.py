@@ -8,7 +8,7 @@ from person_detection_temi.submodules.kpr_onnx import KPR as KPR_onnx
 from person_detection_temi.submodules.kpr_reid import KPR as KPR_torch
 from person_detection_temi.submodules.bbox_kalman_filter import BboxKalmanFilter, chi2inv95
 from person_detection_temi.submodules.memory import Bucket
-from person_detection_temi.submodules.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, bbox_to_xyah, xyah_to_bbox
+from person_detection_temi.submodules.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances, bbox_to_xyah, xyah_to_bbox
 
 class SOD:
 
@@ -45,7 +45,7 @@ class SOD:
         self.man_kf = None
         self.cov_kf = None
 
-        self.reid_thr = 0.7
+        self.reid_thr = 0.9
 
         self.memory_bucket = Bucket(max_identities = 10, samples_per_identity = 20, thr = 0.5)
         self.debug = False
@@ -57,8 +57,16 @@ class SOD:
         self.reid_mode = True
         self.is_tracking = False
 
+        self.whitelist = []
+        self.blacklist = [-1]
+
     def to(self, device):
         self.device = device
+
+
+    def set_track_id(self, id):
+        self.whitelist.append(id)
+        self.reid_mode = False
 
 
     def iknn(self, feats, feats_vis, metric="euclidean", threshold=0.8):
@@ -151,6 +159,7 @@ class SOD:
         poses = []
         bboxes = []
         track_ids = []
+
         for result in results: # Need to iterate because if batch is longer than one it should iterate more than once
             boxes = result.boxes  # Boxes object
             keypoints = result.keypoints
@@ -158,6 +167,8 @@ class SOD:
             for i ,(box, kpts) in enumerate(zip(boxes, keypoints.data)):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 track_id = -1 if box.id is None else box.id.int().cpu().item()
+
+                print("BOX", x1, x2, y1, y2, track_id)
                 # Crop the Image
                 subimage = cv2.resize(img_rgb[y1:y2, x1:x2], size)
                 # Getting Eyes+Torso+knees Keypoints for pose estimation
@@ -167,6 +178,10 @@ class SOD:
                 pose = self.get_person_pose(torso_kpts, img_depth)
                 # Store all the bounding box detections and subimages in a tensor
                 subimages.append(torch.tensor(subimage, dtype=torch.float16).permute(2, 0, 1).unsqueeze(0))
+
+                print("SUBIMAGE")
+                print(subimage.shape)
+                print(len(subimages))
                 bboxes.append((x1, y1, x2, y2))
                 track_ids.append(track_id)
                 person_kpts.append(torso_kpts)
@@ -179,9 +194,9 @@ class SOD:
         poses = np.array(poses)
         bboxes = np.array(bboxes)
         track_ids = np.array(track_ids)
-        batched_tensor = torch.cat(subimages).to(device=self.device)
+        batched_imgs = torch.cat(subimages).to(device=self.device)
         batched_kpts = torch.stack(total_keypoints, dim=0).to(device=self.device)
-        return [batched_tensor, batched_kpts, bboxes, person_kpts, poses, track_ids]
+        return [batched_imgs, batched_kpts, bboxes, person_kpts, poses, track_ids]
 
     def detect(self, img_rgb, img_depth, detection_class=0):
 
@@ -190,7 +205,6 @@ class SOD:
         img_w = img_rgb.shape[1]
 
         self.bucket_counter += 1
-
 
         with torch.inference_mode():
                 
@@ -202,7 +216,7 @@ class SOD:
 
             # Measure time for `masked_detections`
             start_time = time.time()
-            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = False, detection_thr=0.6)
+            detections = self.masked_detections(img_rgb, img_depth, detection_class=detection_class, track = True, detection_thr=0.0)
             end_time = time.time()
             masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
             print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -211,10 +225,6 @@ class SOD:
             # If no detection (No human) then stay on reid mode and return Nothing
             if not (len(detections) > 0):
                 self.reid_mode = True
-                # self.is_tracking = False
-                # Consider predicting in here
-                if self.is_tracking:
-                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
                 return None
             
             # YOLO Detection Results
@@ -224,83 +234,92 @@ class SOD:
 
             if self.reid_mode: # ReId mode
 
-                print("REID MODE")
+            #     print("REID MODE")
 
-                if self.is_tracking:
+            #     if self.is_tracking:
 
-                    print("TRACKING")
-                    print("USING SOME BBOXES")
+            #         print("TRACKING")
+            #         print("USING SOME BBOXES")
 
-                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
-                    mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
+            #         self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
+            #         mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
 
-                    within_mb = np.argwhere(mb_dist < chi2inv95[4]).flatten().tolist()
-                    print("within_mb", within_mb)
+            #         within_mb = np.argwhere(mb_dist < chi2inv95[4]).flatten().tolist()
+            #         print("within_mb", within_mb)
 
-                    if len(within_mb) < 1:
-                        return None
+            #         if len(within_mb) < 1:
+            #             similarity = np.random.uniform(0, 1,  poses.shape[0]).tolist()
+            #             return (poses, bboxes, person_kpts, track_ids, similarity, [])
 
-                    # Prune Bounding Boxes to only evaluate the closest ones to the target that might cause occlusion
-                    detections_imgs = detections_imgs[within_mb]
-                    detection_kpts = detection_kpts[within_mb]
-                    bboxes = bboxes[within_mb]
-                    person_kpts = [person_kpts[i] for i in within_mb]
-                    poses = poses[within_mb]
-                    track_ids = track_ids[within_mb]
+            #         # Prune Bounding Boxes to only evaluate the closest ones to the target that might cause occlusion
+            #         detections_imgs = detections_imgs[within_mb]
+            #         detection_kpts = detection_kpts[within_mb]
+            #         bboxes = bboxes[within_mb]
+            #         person_kpts = [person_kpts[i] for i in within_mb]
+            #         poses = poses[within_mb]
+            #         track_ids = track_ids[within_mb]
 
-                    # Measure time for `feature_extraction` - Extract features to all subimages
-                    start_time = time.time()
-                    detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
-                    end_time = time.time()
-                    feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
-                    print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
-                    total_execution_time += feature_extraction_time
+            #         # Measure time for `feature_extraction` - Extract features to all subimages
+            #         start_time = time.time()
+            #         detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+            #         end_time = time.time()
+            #         feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            #         print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
+            #         total_execution_time += feature_extraction_time
 
-                    # Measure time for `iknn_time` - Classify the features with KNN
-                    start_time = time.time()
-                    classification = self.iknn(detections_features[0], detections_features[1], threshold=self.reid_thr)
-                    end_time = time.time()
-                    iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
-                    print(f"iknn_time execution time: {iknn_time:.2f} ms")
-                    total_execution_time += iknn_time
-                    print("CLASSIFICATION", classification)
+            #         # Measure time for `iknn_time` - Classify the features with KNN
+            #         start_time = time.time()
+            #         classification = self.iknn(detections_features[0], detections_features[1], threshold=self.reid_thr)
+            #         end_time = time.time()
+            #         iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            #         print(f"iknn_time execution time: {iknn_time:.2f} ms")
+            #         total_execution_time += iknn_time
+            #         print("CLASSIFICATION", classification)
 
-                    if len(within_mb) > 1:
+            #         if len(within_mb) > 1:
 
-                        part_gates = torch.sum(classification & detections_features[1].T, dim=0)
-                        max_part_gate = torch.max(part_gates)
+            #             part_gates = torch.sum(classification & detections_features[1].T, dim=0)
+            #             max_part_gate = torch.max(part_gates)
 
-                        knn_gate = (part_gates == max_part_gate).cpu().numpy()
-                    else:
-                        knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
+            #             knn_gate = (part_gates == max_part_gate).cpu().numpy()
+            #         else:
+            #             knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
 
 
-                    mb_dist = np.array(mb_dist)[within_mb]
-                    mb_gate = mb_dist < chi2inv95[4]
+            #         mb_dist = np.array(mb_dist)[within_mb]
+            #         mb_gate = mb_dist < chi2inv95[4]
 
-                    gate = knn_gate*mb_gate
+            #         gate = knn_gate*mb_gate
 
-                    # Get All indices belonging to valid Detections
-                    best_idx = np.argwhere(gate == 1).flatten().tolist()
+            #         # Get All indices belonging to valid Detections
+            #         best_idx = np.argwhere(gate == 1).flatten().tolist()
 
-                    if np.sum(gate) == 1:
-                        self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
+            #         if np.sum(gate) == 1:
+            #             self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_idx[0]])
 
-                        # latest_features = detections_features[0][best_idx]
-                        # latest_visibilities = detections_features[1][best_idx]
-                        ## For debugging Purposes #####################
-                        # latest_template = detections_imgs[best_idx]
-                        ###############################################
-                        # self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
+            #             # latest_features = detections_features[0][best_idx]
+            #             # latest_visibilities = detections_features[1][best_idx]
+            #             ## For debugging Purposes #####################
+            #             # latest_template = detections_imgs[best_idx]
+            #             ###############################################
+            #             # self.memory_bucket.store_feats(latest_features, latest_visibilities, counter = self.bucket_counter, img_patch=latest_template.cpu().numpy(), debug = self.debug)
               
-                else:
+            #     else:
 
-                    print("NO TRACKING")
-                    print("USING ALL BBOXES")
+                print("NO TRACKING")
+                print("USING NON BLACKLISTED BBOXES")
+                tracked_ids = track_ids.tolist()
 
+                to_test = [tracked_ids.index(i) for i in tracked_ids if i not in self.blacklist]
+
+                print("self.blacklist", self.blacklist)
+
+                print("To_TEST_LIST", to_test)
+
+                if len(to_test) > 0:
                     # Measure time for `feature_extraction` - Extract features to all subimages
                     start_time = time.time()
-                    detections_features = self.feature_extraction(detections_imgs=detections_imgs, detection_kpts=detection_kpts)
+                    detections_features = self.feature_extraction(detections_imgs=detections_imgs[to_test], detection_kpts=detection_kpts[to_test])
                     end_time = time.time()
                     feature_extraction_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     print(f"feature_extraction execution time: {feature_extraction_time:.2f} ms")
@@ -316,130 +335,116 @@ class SOD:
                     print("CLASSIFICATION", classification)
 
                     # When Relying only on visual features, it is necessary to reidentfy consdiering all body parts to make a decision
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1).cpu().numpy()
+                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1 ).cpu().numpy()
+
                     gate = knn_gate
 
                     # Get All indices belonging to valid Detections
                     best_idx = np.argwhere(gate == 1).flatten().tolist()
 
-                valid_idxs = best_idx
-                
-                # If there is not a valid detection but a box is being tracked (keep prediction until box is out of fov)
-                if not np.sum(gate) and self.is_tracking:
-                    self.reid_mode = True
-                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
-                    tracked_bbox = xyah_to_bbox(self.mean_kf[:4])[0]
-                    # if tracked box is out of FOV then stop tracking and rely purely on visual appearance
-                    if tracked_bbox[2] < 0 or  tracked_bbox[0] > img_w:
-                        self.is_tracking = False
-                    return None
-                
-                # If there are no valid detection and no box is being tracked
-                elif not np.sum(gate) and not self.is_tracking:
-                    self.reid_mode = True
-                    return None
-                    
-                # If there is only valid detection 
-                elif np.sum(gate) == 1 and not self.is_tracking: 
-                    # Extra conditions
-                    best_match_idx = best_idx[0]
-                    target_bbox = bboxes[best_match_idx]
-                    self.mean_kf, self.cov_kf = self.tracker.initiate(bbox_to_xyah(target_bbox)[0])
-                    self.is_tracking = True
-                    self.reid_mode = False
+                    valid_idxs = [to_test[i] for i in best_idx]
 
-                elif np.sum(gate) == 1 and self.is_tracking: 
-                    # Extra conditions
-                    self.reid_mode = False
+                    self.whitelist = []
+                    for i in valid_idxs:
+                        self.whitelist.append(track_ids[i]) 
+
+                    print("self.whitelist", self.whitelist)
+                
+                    # If there is not a valid detection but a box is being tracked (keep prediction until box is out of fov)
+                    if not np.sum(gate) and self.is_tracking:
+                        self.reid_mode = True
+                        valid_idxs = []
+                    
+                    # If there are no valid detection and no box is being tracked
+                    elif not np.sum(gate) and not self.is_tracking:
+                        self.reid_mode = True
+                        valid_idxs = []
+                        
+                    # If there is only valid detection 
+                    elif np.sum(gate) == 1 and not self.is_tracking: 
+                        self.reid_mode = False
+
+                    elif np.sum(gate) == 1 and self.is_tracking: 
+                        # Extra conditions
+                        self.reid_mode = False
+                else:
+                    valid_idxs = []
 
             else: # Tracking mode
-                print("TRACKING MODE")
                 self.store_features = True
+                valid_idxs = []
+                tracked_ids = track_ids.tolist()
 
-                # Track using iou constant acceleration model or ay opencv tracker (KCF)
-                self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
-                # Data association Based on Only Spatial Information
+                for target_id in self.whitelist:
+                    if target_id in track_ids:
+                        valid_idxs.append(tracked_ids.index(target_id))
 
-                # Association Based on Mahalanobies Distance
-                mb_dist = self.tracker.gating_distance(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes))
-
-                print("mb_dist", mb_dist)
-                print("mb_dist.shape", mb_dist.shape)
-
-                number_det = len(mb_dist)
-
-                if number_det < 2:
-                    best_match_idx = 0 #np.argmin(mb_dist)
-                else:
-                    best_match_idx, second_best_idx = np.argsort(mb_dist)[:2]
-
-                target_bbox = bboxes[best_match_idx]
-
-                # If the Association Metric (Mahalanobies Distance) is greater than the gate then return
-                # and reidentify solely based on the appearance
-                if mb_dist[best_match_idx] > chi2inv95[4]:
-                    self.mean_kf, self.cov_kf = self.tracker.predict(self.mean_kf, self.cov_kf)
-                    self.reid_mode = True
-                    return None
-                else:
-                    self.mean_kf, self.cov_kf = self.tracker.update(self.mean_kf, self.cov_kf, bbox_to_xyah(bboxes)[best_match_idx])
-
-                # This is to visualize the Mahalanobies Distances
-                ################### VISUALIZATION #####################
-                # similarity = mb_dist
-                similarity = mb_dist
-
-                valid_idxs = [best_match_idx]
-
-                for i in range(len(track_ids)):
-                    track_ids[i] = 2222
-                ##################################################
+                        # Clearing blacklisted ids if they are not in the image anymore
+                        # for i in range(len(self.blacklist)):
+                        #     if self.blacklist[i] not in tracked_ids:
+                        #         self.blacklist.pop(i)
+                    else:
+                        self.whitelist = []
+                        self.reid_mode = True
+                        self.store_features = False
 
                 #### IF SPATIAL AMBIGUITY IS PRESENT GO BACK TO ADD APPEARANCE INFORMATION FOR ASSOCIATION ###############
 
+                second_best_idx = 0
+
                 # Check if bounding boxes are too close to the target
                 # if so return nothing and change to reid_mode
-                if number_det > 1:
+                if len(valid_idxs) > 0  and len(tracked_ids) > 1:
                     # See one time steps into the futre if there will be an intersection
-                    fut_mean, fut_cov = self.tracker.predict(self.mean_kf, self.cov_kf)
+                    # fut_mean, fut_cov = self.tracker.predict(self.mean_kf, self.cov_kf)
                     # fut_mean, fut_cov = self.tracker.predict(fut_mean, fut_cov)
-                    fut_target_bbox = xyah_to_bbox(fut_mean[:4])[0]
+                    # fut_target_bbox = xyah_to_bbox(fut_mean[:4])[0]
 
-                    distractor_bbox = np.delete(bboxes, best_match_idx, axis=0)
-                    ious_to_target = iou_vectorized(fut_target_bbox,  distractor_bbox)
+                    distractor_bbox = np.delete(bboxes, valid_idxs[0], axis=0)
+                    ious_to_target = iou_vectorized(bboxes[valid_idxs[0]],  distractor_bbox)
+                    distances = compute_center_distances(bboxes[valid_idxs[0]],  bboxes)
+                    distances = np.where(distances > 0, distances, np.inf)
+                    second_best_idx = np.argmin(distances)
+
+                    print("ious_to_target", ious_to_target)
 
                     if  np.any(ious_to_target > 0.):
                         self.store_features = False
 
                     if  np.any(ious_to_target > 0.):
                         print("Too close to obstacle")
+                        self.whitelist = []
+
+                        if tracked_ids[second_best_idx] in self.blacklist:
+                            self.blacklist.pop(self.blacklist.index(tracked_ids[second_best_idx]))
+
                         self.reid_mode = True
-                        # self.store_features = False
 
-
-                tx1, ty1, tx2, ty2 = target_bbox
-
-                # check if the target bbox is out from the image plane
-                # if so return nothing and change to reid_mode
-                if tx2 < 0 or tx1 > img_rgb.shape[1] :
-                    self.reid_mode = True                
+                if not self.reid_mode:
+                    for target_id in self.whitelist:
+                        # Blacklisting tracks belonging to distractors
+                        for id in tracked_ids:
+                            if id == target_id:
+                                continue
+                            elif id not in self.blacklist:
+                                self.blacklist.append(id)
+            
                 ###############################################################################################################
                 
                 # Store features only when the target person is clearly identified and not occluded by any other distractor box
 
-                if self.store_features and not self.reid_mode: 
+                if self.store_features:
                     # Incremental Learning
 
                     # Measure time for `feature_extraction and feature storing` - Extract features to all subimages
                     start_time = time.time()
 
-                    if number_det < 2:
-
+                    if  len(tracked_ids) < 2:
                         latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
                         self.memory_bucket.store_feats(latest_features[0], latest_features[1], counter = self.bucket_counter, img_patch = detections_imgs[valid_idxs].cpu().numpy(), debug = self.debug)
-                    
                     else:
                         valid_idxs.append(second_best_idx)
+                        print("POS NEG FEATURE EXTRACT", valid_idxs)
                         latest_features = self.feature_extraction(detections_imgs=detections_imgs[valid_idxs], detection_kpts=detection_kpts[valid_idxs])
                         
                         self.memory_bucket.store_feats(latest_features[0][[0]], latest_features[1][[0]], debug = False)

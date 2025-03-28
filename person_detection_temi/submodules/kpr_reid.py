@@ -14,6 +14,49 @@ torch.backends.cudnn.enabled = True  # Enable cuDNN optimizations (GPU only)
 torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 for matmul (Ampere GPUs)
 torch.backends.cudnn.deterministic = False  #
 
+def compute_visibility_torch(kpts_batch, threshold=0.5):
+    """
+    Args:
+        kpts_batch: torch tensor of shape [batch, 17, 3] (x, y, conf)
+        threshold: float, confidence threshold to consider a keypoint visible
+    Returns:
+        visibility: torch.BoolTensor of shape [batch, 6]
+    """
+
+    # print(kpts_batch)
+    k_five = {
+        'head':  [0, 1, 2, 3, 4],
+        # 'head':  [3, 4],
+        'torso': [5, 6, 11, 12],
+        'arms':  [7, 8, 9, 10],
+        'legs':  [13, 14],
+        'feet':  [15, 16],
+    }
+
+    device = kpts_batch.device
+    batch_size = kpts_batch.shape[0]
+    visibility = torch.zeros((batch_size, 6), dtype=torch.bool, device=device)
+
+    # Extract coordinates and confidence
+    x = kpts_batch[:, :, 0]
+    y = kpts_batch[:, :, 1]
+    conf = kpts_batch[:, :, 2]
+
+    # A keypoint is valid if:
+    # - conf > threshold
+    # - and (x > 1 or y > 1)
+    is_valid = (conf > threshold) & ((x > 1) | (y > 1))  # shape: [batch, 17]
+
+    for i, part in enumerate(['head', 'torso', 'arms', 'legs', 'feet']):
+        indices = torch.tensor(k_five[part], device=device)
+        part_valid = is_valid[:, indices]  # [batch, num_kpts]
+        visibility[:, i + 1] = part_valid.any(dim=1)
+
+    # Index 0: overall visibility — if any of the other 5 are visible
+    visibility[:, 0] = visibility[:, 1:].any(dim=1)
+
+    return visibility
+
 class KPR(object):
     def __init__(self, cfg_file, kpt_conf = 0., device = 'cpu') -> None:
 
@@ -124,8 +167,10 @@ class KPR(object):
         #     'feet': ['left_ankle', 'right_ankle'],
         # }
 
-        f_, v_, _, _ = features
+        v_ = compute_visibility_torch(kpts, 0.2)
 
+        # f_, v_, _, _ = features
+        f_, _, _, _ = features
 
         if self.cfg.test.normalize_feature:
             f_ = self.normalize(f_)

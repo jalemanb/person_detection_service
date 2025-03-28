@@ -121,6 +121,27 @@ def get_indices_and_values_as_lists_np(array, threshold, less_than=True):
     
     return indices_list, values_list
 
+
+def compute_center_distances(box, boxes):
+    # Ensure input is numpy array
+    box = np.asarray(box).reshape(1, 4)
+    boxes = np.asarray(boxes)
+    
+    # Validate shapes
+    if box.shape != (1, 4):
+        raise ValueError("The 'box' parameter must have shape (4,).")
+    if boxes.ndim != 2 or boxes.shape[1] != 4:
+        raise ValueError("The 'boxes' parameter must have shape (N, 4).")
+    
+    # Compute centers
+    box_center = (box[:, :2] + box[:, 2:]) / 2  # shape: (1, 2)
+    boxes_centers = (boxes[:, :2] + boxes[:, 2:]) / 2  # shape: (N, 2)
+    
+    # Compute distances
+    distances = np.linalg.norm(boxes_centers - box_center, axis=1)  # shape: (N,)
+    
+    return distances
+
 def iou_vectorized(box, boxes):
     """
     Compute the Intersection over Union (IoU) between one box and multiple boxes.
