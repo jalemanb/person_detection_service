@@ -96,7 +96,6 @@ class Bucket:
                 self.distractor_feats[-new_feats_num:] = feats
                 self.distractor_vis[-new_feats_num:] = vis
 
-            print("Number of distractors", self.distractors_num)
 
     def store_feats(self, feats, vis, counter = 0, img_patch = None, debug = False):
         """
@@ -129,9 +128,7 @@ class Bucket:
                                                 vis, 
                                                 self.mean_prototypes_vis[:self.active_prototypes_num], 
                                                 distance_type="euclidean")
-            
-            print("MEMBERSHIP", memership)
-            
+                        
             min_dist, min_idx = torch.min(memership, dim=1)
 
             min_dist, prototype_id = min_dist.item(), min_idx.item()
@@ -212,19 +209,9 @@ class Bucket:
                         self.gallery_feats[replacement_idx, 0] = feats
                         self.gallery_vis[replacement_idx, 0] = vis
 
-
-            print("MEMBERSHIP", memership)
-
-            print("NUMER OF SAMPLES", self.get_samples_num())
-
-            print("NUMBER OF PROTOTYPE MEANS", self.samples_per_id_num)
-
             # Update Mean prototype representation
             # Update visibility representation for each mean prototype
-
-
             self.mean_prototypes_feats[:self.active_prototypes_num], self.mean_prototypes_vis[:self.active_prototypes_num] = self.compute_avg_features(self.gallery_feats, self.gallery_vis, self.active_prototypes_num, self.samples_per_id_num)
-
 
         if debug:
             prototype_means_feats_np = self.mean_prototypes_feats[:self.active_prototypes_num].cpu().numpy()
@@ -255,10 +242,6 @@ class Bucket:
         total_feats = torch.cat((pos_feats, neg_feats), dim=0)
         total_vis = torch.cat((pos_vis, neg_vis), dim=0)
         total_labels = torch.cat((pos_labels, neg_labels))
-
-        print("self.current_feats", pos_feats.shape)
-        print("self.current_vis", pos_vis.shape)
-        print("active_prototypes_num", self.active_prototypes_num)
 
         return total_feats, total_vis, total_labels
 
@@ -312,9 +295,6 @@ class Bucket:
         else:
             raise ValueError("Invalid distance_type. Choose 'cosine' or 'euclidean'.")
 
-        print("Part Distance")
-        print(distances)
-
         distances = distances * valid_mask                   # zero out invalid parts
 
         valid_counts = valid_mask.sum(dim=-1).float()        # [B1, B2]
@@ -323,64 +303,6 @@ class Bucket:
         mean_distances = distances.sum(dim=-1) / valid_counts  # [B1, B2]
         
         return mean_distances  # shape: [B1, B2]
-
-    # def compute_mean_distance(self, tensor1, tensor2, visibility1, visibility2, distance_type="cosine"):
-    #     """
-    #     Computes the mean distance (cosine or Euclidean) between corresponding elements in tensor1 and tensor2, 
-    #     considering the visibility masks.
-
-    #     Args:
-    #         tensor1 (torch.Tensor): Tensor of shape [batch, 6, 512].
-    #         tensor2 (torch.Tensor): Tensor of shape [batch, 6, 512].
-    #         visibility1 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor1.
-    #         visibility2 (torch.Tensor): Boolean tensor of shape [batch, 6], indicating valid entries in tensor2.
-    #         distance_type (str): Type of distance to compute - "cosine" or "euclidean".
-
-    #     Returns:
-    #         torch.Tensor: The mean distance computed across all valid elements.
-    #     """
-
-    #     # Ensure visibility masks are boolean
-    #     visibility1 = visibility1.bool()
-    #     visibility2 = visibility2.bool()
-
-    #     # Compute joint visibility: only consider distances where both tensors are visible
-    #     valid_mask = visibility1 & visibility2  # Shape: [batch, 6]
-
-    #     if distance_type == "cosine":
-    #         # Normalize vectors for cosine similarity
-    #         tensor1_norm = F.normalize(tensor1, p=2, dim=-1)
-    #         tensor2_norm = F.normalize(tensor2, p=2, dim=-1)
-
-    #         # Compute cosine similarity
-    #         cos_sim = torch.sum(tensor1_norm * tensor2_norm, dim=-1)  # Shape: [batch, 6]
-
-    #         # Convert similarity to distance
-    #         distances = 1 - cos_sim  # Shape: [batch, 6]
-
-    #     elif distance_type == "euclidean":
-    #         # Compute Euclidean distance
-    #         distances = torch.norm(tensor1 - tensor2, p=2, dim=-1)  # Shape: [batch, 6]
-
-    #     else:
-    #         raise ValueError("Invalid distance_type. Choose 'cosine' or 'euclidean'.")
-        
-    #     print("Part Distances")
-    #     print(distances)
-
-    #     # Mask out invalid distances
-    #     distances = distances * valid_mask  # Zero out distances where either tensor is not visible
-
-    #     # Compute the mean only over valid entries
-    #     valid_counts = valid_mask.sum(dim=-1).float()  # Count valid distances per batch
-
-    #     # Avoid division by zero (replace 0 with 1 to avoid NaNs)
-    #     valid_counts = torch.where(valid_counts > 0, valid_counts, torch.tensor(1.0, device=valid_counts.device))
-
-    #     # Compute the mean distance per batch
-    #     mean_distances = distances.sum(dim=-1) / valid_counts  # Shape: [batch]
-
-    #     return mean_distances
 
     def compute_avg_features(self, features, visibilities, current_valid_ids, num_samples_per_id):
         """

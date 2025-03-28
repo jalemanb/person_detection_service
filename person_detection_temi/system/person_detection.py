@@ -1,17 +1,16 @@
 # person_detection_temi/pose_estimation_node.py
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CompressedImage, PointCloud2
+from sensor_msgs.msg import Image, CompressedImage
 from realsense2_camera_msgs.msg import RGBD
 from person_detection_msgs.msg import BoundingBox
-from person_detection_msgs.msg import BoundingBoxArray
 from geometry_msgs.msg import Pose, TransformStamped, PoseArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
 import torch 
-from person_detection_temi.submodules.SOD import SOD
+from person_detection_temi.system.SOD import SOD
 import os
 from ament_index_python.packages import get_package_share_directory
 from scipy.spatial.transform import Rotation as R
@@ -21,16 +20,23 @@ class HumanPoseEstimationNode(Node):
     def __init__(self):
         super().__init__('pose_estimation_node')
 
-        # Create subscribers with message_filters
-        self.rgbd_subscription = self.create_subscription(RGBD,'/camera/camera/rgbd',self.image_callback,10)
-        self.rgbd_subscription
-
         # Create publishers
-        self.publisher_human_pose = self.create_publisher(PoseArray, '/detections', 10)
-        self.publisher_debug_detection_image_compressed = self.create_publisher(CompressedImage, '/human_detection_debug/compressed/human_detected', 10)
-        self.publisher_debug_detection_image = self.create_publisher(Image, '/human_detection_debug/human_detected', 10)
-        self.publisher_debug_bounding_boxes = self.create_publisher(BoundingBoxArray, '/human_detection_debug/bounding_boxes', 10)
-
+        self.publisher_human_pose = self.create_publisher(
+            PoseArray, 
+            '/detections', 
+            10
+        )
+        self.publisher_debug_detection_image_compressed = self.create_publisher(
+            CompressedImage, 
+            '/human_detection/img_compressed', 
+            10
+        )
+        self.publisher_debug_detection_image = self.create_publisher(
+            Image, 
+            '/human_detection/img_raw', 
+            10
+        )
+ 
         # Create a TransformBroadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
         self.tf_buffer = Buffer()
@@ -39,30 +45,39 @@ class HumanPoseEstimationNode(Node):
         # Bridge to convert ROS messages to OpenCV 
         self.cv_bridge = CvBridge()
 
-        self.draw_box = False
-
         # Single Person Detection model
         # Setting up Available CUDA device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
-        # yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-segpose.engine')
-        yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolov8n-pose.engine')
-        feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
-        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
+        yolo_models = ['yolo11n-pose.pt']
+        yolo_model = None
+
+        for model_file in yolo_models:
+            file_path = os.path.join(pkg_shared_dir, "models", model_file)
+            if os.path.exists(file_path):
+                yolo_model = file_path
+                break
+
+        yolo_path = os.path.join(pkg_shared_dir, 'models', yolo_model)
+        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
+        bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
 
         # Loading Template IMG
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
+        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
         # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_sidewalk.jpg')
-
-        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate_2.png')
+        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate_2.png')
         # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_hallway_2.jpg')
 
         self.template_img = cv2.imread(template_img_path)
 
         # Setting up Detection Pipeline
-        self.model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path)
+        self.model = SOD(
+            yolo_model_path = yolo_path, 
+            feature_extracture_cfg_path = feature_extracture_cfg_path, 
+            tracker_system_path=bytetrack_path
+        )
         self.model.to(device)
         self.get_logger().warning('Deep Learning Model Armed')
 
@@ -70,9 +85,11 @@ class HumanPoseEstimationNode(Node):
         self.model.template_update(self.template_img)
 
         # Warmup inference (GPU can be slow in the first inference)
-        self.model.detect(img_rgb = np.ones((480, 640, 3), dtype=np.uint8), img_depth = np.ones((480, 640), dtype=np.uint16))
-        self.get_logger().warning('Warmup Inference Executed')
-
+        self.model.detect(
+            img_rgb = np.ones((480, 640, 3), dtype=np.uint8), 
+            img_depth = np.ones((480, 640), dtype=np.uint16))
+        self.get_logger().info('Warmup Inference Executed')
+        
         # Frame ID from where the human is being detected
         self.frame_id = None
 
@@ -84,6 +101,14 @@ class HumanPoseEstimationNode(Node):
 
         # Combine the rotations
         self.combined_rotation = rot_x * rot_z
+
+        # Create subscribers with message_filters
+        self.rgbd_subscription = self.create_subscription(
+            RGBD,
+            '/camera/camera/rgbd',
+            self.image_callback,
+            1,
+            )
 
     def image_callback(self, rgbd_msg):
 
@@ -98,16 +123,21 @@ class HumanPoseEstimationNode(Node):
             self.get_logger().warning('Depth and RGB images are not the same size. Skipping this pair.')
             return
 
-        # Process the images and estimate pose
-        self.process_images(rgb_image, depth_image)
+        fx = rgbd_msg.rgb_camera_info.k[0]
+        fy = rgbd_msg.rgb_camera_info.k[4]
+        cx = rgbd_msg.rgb_camera_info.k[2]
+        cy = rgbd_msg.rgb_camera_info.k[5]
 
-    def process_images(self, rgb_image, depth_image):
+        # Process the images and estimate pose
+        self.process_images(rgb_image, depth_image, [fx, fy, cx, cy])
+
+    def process_images(self, rgb_image, depth_image, camera_params):
         # Your pose estimation logic here
         # For demonstration, let's assume we get the pose from some function
 
         start_time = time.time()
         ############################
-        results = self.model.detect(rgb_image, depth_image)
+        results = self.model.detect(rgb_image, depth_image, camera_params)
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
@@ -122,92 +152,71 @@ class HumanPoseEstimationNode(Node):
         tracked_ids = []
 
         if results is not None:
-            self.draw_box = True
 
             person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
-            self.get_logger().warning(f"CONFIDENCE: {conf} %")
 
             person_poses = person_poses[valid_idxs]
 
             person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
 
-            print("person_poses", person_poses)
-
             # Generate and publish the point cloud
             if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
-                self.get_logger().warning('Publishing Person Pose that belongs to the desired Human')
+                self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
                 # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
                 self.publish_human_pose(person_poses, [0., 0., 0., 1.], "base_link")
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
-            self.get_logger().warning('Publishing Compressed Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, compressed=True, conf = conf)
+            self.get_logger().info('Publishing Compressed Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, compressed=True)
 
         #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image.get_subscription_count() > 0:
-            self.get_logger().warning('Publishing Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=False, conf = conf)
+            self.get_logger().info('Publishing Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=False)
 
-
-    def publish_debug_img(self, rgb_img, boxes, kpts, valid_idxs, confidences, tracked_ids, compressed = True, conf = 0.5):
+    def publish_debug_img(self, rgb_img, boxes, kpts, valid_idxs, confidences, tracked_ids, compressed = True):
         color_kpts = (255, 0, 0) 
         radius_kpts = 10
         thickness = 2
-
-        print("confidences", confidences)
-
-        bounding_boxes_list = []
 
         if len(boxes) > 0 and len(kpts) > 0:
 
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = box
+                
+                # Invalid detections go red
+                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
 
-                individual_bounding_box = BoundingBox()
-                individual_bounding_box.x1 = int(x1)
-                individual_bounding_box.y1 = int(y1)
-                individual_bounding_box.x2 = int(x2)
-                individual_bounding_box.y2 = int(y2)
+                if len(valid_idxs) == 1:
+                    # If there is only one valid detection paint it green
+                    correct_color = (0, 255, 0) 
 
-                bounding_boxes_list.append(individual_bounding_box)
+                elif len(valid_idxs) > 1:
+                    # If there are multiple valid detections paint them blue
+                    correct_color = (255, 0, 0)
 
-                # cv2.putText(rgb_img, f"{conf * 100:.2f}%" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), thickness)
-
-                # if i == target_idx and conf < 600.:
-                # if target_idx[i]: #and conf < 0.8:
                 if i in valid_idxs:
                     alpha = 0.2
                     overlay = rgb_img.copy()
-                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), correct_color, -1)
                     cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
-                    individual_bounding_box.tgt = True
 
                 # Just for debugging
                 cv2.putText(rgb_img, f"{confidences[i]:.2f}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1, y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1 + int((x2-x1)/2), y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-            
                 kpt = kpts[i]
                 for j in range(kpt.shape[0]):
                     u = kpt[j, 0]
                     v = kpt[j, 1]
                     cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
 
-
-
         if compressed:
             self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
         
-        # Publishing the bounding boxes by frame
-        bounding_boxes_msg = BoundingBoxArray()
-        bounding_boxes_msg.boxes = bounding_boxes_list
-        self.publisher_debug_bounding_boxes.publish(bounding_boxes_msg)
-
-
     def publish_human_pose(self, poses, orientation, frame_id):
 
         # Publish the pose with covariance
@@ -259,7 +268,6 @@ class HumanPoseEstimationNode(Node):
 
         return poses_transformed.T.tolist()
     
-
     def broadcast_human_pose(self, pose, orientation):
         # Broadcast the transform
         transform = TransformStamped()

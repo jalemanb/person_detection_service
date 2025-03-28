@@ -4,14 +4,13 @@ import cv2
 import numpy as np
 import torch
 from ament_index_python.packages import get_package_share_directory
-from person_detection_temi.submodules.SOD import SOD
+from person_detection_temi.system.SOD import SOD
 import time
 
 save_boxes = True
 save_bucket = False
 save_time = True
 show_img = True
-
 
 def save_execution_times(times, filename):
     """
@@ -66,9 +65,9 @@ def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=Fa
         for row in rows_array:
             f.write(' '.join(map(str, row)) + '\n')
 
-def evaluation(dataset):
+def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
 
-    print("Time to evaluate")
+    print("TIME TO EVALUATE")
 
     ########################################################################################################
     # Initialize Person Detection Model
@@ -78,19 +77,15 @@ def evaluation(dataset):
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
     yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.pt')
     bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
-    feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid.onnx')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
     ### OCL Datasets ####################################################
     ocl_datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
     robot_datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
 
-    # dataset = "room"
-    # dataset = "ocl_demo2"
-    # dataset = "corridor2"
 
     if dataset  in ocl_datasets:
-        rgb_dir = f"/media/enrique/Extreme SSD/ocl/{dataset}/"
+        rgb_dir = f"{ocl_dataset_path}/{dataset}/"
         template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### OCL Datasets ####################################################
 
@@ -98,7 +93,7 @@ def evaluation(dataset):
     ### Stotos Lab Datasets ####################################################
     # dataset = "walking_outdoor"
     if dataset in robot_datasets:
-        rgb_dir = f"/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed/{dataset}/left/"
+        rgb_dir = f"{robot_dataset_path}/{dataset}/left/"
         template_img_path = os.path.join(rgb_dir+f'template_{dataset}.jpg')
     ### Stotos Lab Datasets ####################################################
 
@@ -110,15 +105,14 @@ def evaluation(dataset):
     # template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### Robocup Datasets ####################################################
 
-
-    # Load Template Image
-    # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
-
-    # template_img_path = os.path.join("/media/enrique/Extreme SSD/ocl_demo/ocl_template.png")
     template_img = cv2.imread(template_img_path)
 
     # Setup Detection Pipeline
-    model = SOD(yolo_path, feature_extracture_model_path, feature_extracture_cfg_path, tracker_system_path=bytetrack_path)
+    model = SOD(
+        yolo_model_path = yolo_path, 
+        feature_extracture_cfg_path = feature_extracture_cfg_path, 
+        tracker_system_path=bytetrack_path
+    )
     model.to(device)
 
     # Initialize the template
@@ -126,14 +120,8 @@ def evaluation(dataset):
     ########################################################################################################
     model.set_track_id(1)
 
-    # Paths
-    # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo2/"
-    # rgb_dir = "/media/enrique/Extreme SSD/ocl_demo/"
-    # rgb_dir = "/home/enrique/Videos/crowds/crowd3/"
-
     results_bboxes_file = rgb_dir + f"{dataset}_bboxes_results.txt"
     results_times_file = rgb_dir + f"{dataset}_times_results.txt"
-
 
     # Get all RGB images sorted by numeric order
     rgb_images = sorted(
@@ -144,14 +132,10 @@ def evaluation(dataset):
     bboxes = []
     times = []
 
-    print(rgb_images)
-
     # Iterate through each RGB image
     for i, rgb_img_name in enumerate(rgb_images):
 
         rgb_img_path = os.path.join(rgb_dir, rgb_img_name)
-
-        print(rgb_img_path)
 
         rgb_img = cv2.imread(rgb_img_path, cv2.IMREAD_COLOR)  # Read RGB as BGR8
         # rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
@@ -163,7 +147,7 @@ def evaluation(dataset):
 
         # Perform Detection
         start_time = time.time()
-        results = model.detect(rgb_img, depth_img)
+        results = model.detect(rgb_img, depth_img, camera_params=[1.0, 1.0, 1.0, 1.0])
         end_time = time.time()
 
         # Compute execution time in milliseconds
@@ -182,11 +166,10 @@ def evaluation(dataset):
 
                 x1, y1, x2, y2 = map(int, bbox[i])
 
-
-                cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Green Box
-
-                cv2.putText(rgb_img, f"ID: {tracked_ids[i]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                if show_img:
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Green Box
+                    cv2.putText(rgb_img, f"ID: {tracked_ids[i]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
             if len(valid_idxs) != 0 :
                 if save_boxes:
@@ -197,12 +180,10 @@ def evaluation(dataset):
                     id = tracked_ids[valid_id]
                     
                     x1, y1, x2, y2 = map(int, bbox[valid_id])
-                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green Box
+                    
+                    if show_img:
+                        cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green Box
 
-                    # Put confidence score (if available)
-                    if conf is not None and len(conf) > i:
-                        cv2.putText(rgb_img, f"{conf[valid_idxs[i]]:.2f}", (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             else:
                 if save_boxes:
                     bboxes.append(None)
@@ -234,7 +215,7 @@ def main():
     datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["ocl_demo2"]
     for dataset in datasets:
-        evaluation(dataset)
+        evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
 
 if __name__ == '__main__':
     main()

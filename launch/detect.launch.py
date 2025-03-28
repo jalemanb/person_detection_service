@@ -23,9 +23,4 @@ def generate_launch_description():
             output='screen',
             arguments=['-d', rviz_config_file]
         ),
-        # Start playing the rosbag
-        # ExecuteProcess(
-        #     cmd=['ros2', 'bag', 'play', rosbag_path, '--loop', '--rate', '0.5'],
-        #     output='screen'
-        # ),
     ])
