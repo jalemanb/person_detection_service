@@ -10,7 +10,7 @@ import time
 save_boxes = True
 save_bucket = False
 save_time = True
-show_img = True
+show_img = False
 
 def save_execution_times(times, filename):
     """
@@ -75,7 +75,7 @@ def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
 
     # Load model paths
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
-    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.pt')
+    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.engine')
     bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
@@ -218,7 +218,7 @@ def main():
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
 
     for dataset in datasets:
-        evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
+        evaluation(dataset, ocl_dataset_path = "/home/temi/datasets/ocl", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
 
 if __name__ == '__main__':
     main()
