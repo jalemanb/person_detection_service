@@ -1,9 +1,7 @@
 # person_detection_temi/pose_estimation_node.py
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CompressedImage
-from realsense2_camera_msgs.msg import RGBD
-from person_detection_msgs.msg import BoundingBox
+from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Pose, TransformStamped, PoseArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
@@ -11,10 +9,13 @@ import numpy as np
 import cv2
 import torch 
 from person_detection_temi.system.SOD import SOD
+from person_detection_temi.system.img_msg_tools import compressed_imgmsg_to_cv2
 import os
 from ament_index_python.packages import get_package_share_directory
 from scipy.spatial.transform import Rotation as R
 import time
+from message_filters import Subscriber, ApproximateTimeSynchronizer
+from rclpy.qos import qos_profile_sensor_data
 
 class HumanPoseEstimationNode(Node):
     def __init__(self):
@@ -79,7 +80,7 @@ class HumanPoseEstimationNode(Node):
             tracker_system_path=bytetrack_path
         )
         self.model.to(device)
-        self.get_logger().warning('Deep Learning Model Armed')
+        self.get_logger().info('Deep Learning Model Armed')
 
         # Initialize the template
         self.model.template_update(self.template_img)
@@ -102,31 +103,51 @@ class HumanPoseEstimationNode(Node):
         # Combine the rotations
         self.combined_rotation = rot_x * rot_z
 
-        # Create subscribers with message_filters
-        self.rgbd_subscription = self.create_subscription(
-            RGBD,
-            '/camera/camera/rgbd',
-            self.image_callback,
-            1,
-            )
+        
+        # Subscribers using message_filters
+        self.depth_sub = Subscriber(
+            self, 
+            CompressedImage, 
+            '/camera/camera/aligned_depth_to_color/image_raw/compressed',
+            qos_profile=qos_profile_sensor_data)
+        self.rgb_sub = Subscriber(
+            self, 
+            CompressedImage, 
+            '/camera/camera/color/image_raw/compressed',
+            qos_profile=qos_profile_sensor_data)
+        self.info_sub = Subscriber(
+            self, 
+            CameraInfo, 
+            '/camera/camera/color/camera_info',
+            qos_profile=qos_profile_sensor_data)
 
-    def image_callback(self, rgbd_msg):
+        # ApproximateTimeSynchronizer allows small timestamp mismatch
+        self.ts = ApproximateTimeSynchronizer(
+            [self.rgb_sub, self.depth_sub, self.info_sub],
+            queue_size=10,
+            slop=0.1  # seconds
+        )
+        self.ts.registerCallback(self.image_callback)
 
-        self.frame_id = rgbd_msg.depth.header.frame_id
+    def image_callback(self, rgb_msg, depth_msg, info_msg):
+
+        self.frame_id = rgb_msg.header.frame_id
 
         # Convert ROS Image messages to OpenCV images
-        depth_image = self.cv_bridge.imgmsg_to_cv2(rgbd_msg.depth, desired_encoding='passthrough')
-        rgb_image = self.cv_bridge.imgmsg_to_cv2(rgbd_msg.rgb, desired_encoding='bgr8')
+        depth_image = compressed_imgmsg_to_cv2(depth_msg, desired_encoding='16UC1')
+
+        rgb_image = self.cv_bridge.compressed_imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
 
         # Check if RGB and depth images are the same size
         if depth_image.shape != rgb_image.shape[:2]:
             self.get_logger().warning('Depth and RGB images are not the same size. Skipping this pair.')
             return
 
-        fx = rgbd_msg.rgb_camera_info.k[0]
-        fy = rgbd_msg.rgb_camera_info.k[4]
-        cx = rgbd_msg.rgb_camera_info.k[2]
-        cy = rgbd_msg.rgb_camera_info.k[5]
+        fx = info_msg.k[0]
+        fy = info_msg.k[4]
+        cx = info_msg.k[2]
+        cy = info_msg.k[5]
+
 
         # Process the images and estimate pose
         self.process_images(rgb_image, depth_image, [fx, fy, cx, cy])
@@ -141,8 +162,10 @@ class HumanPoseEstimationNode(Node):
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
+
+
             
-        self.get_logger().warning(f"Model Inference Time: {execution_time} ms")
+        self.get_logger().info(f"Model Inference Time: {execution_time} ms")
 
         person_poses = []
         bbox = []
@@ -151,7 +174,10 @@ class HumanPoseEstimationNode(Node):
         valid_idxs = []
         tracked_ids = []
 
+        # self.get_logger().info(f"Results: {results} ms")
+
         if results is not None:
+
 
             person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
 

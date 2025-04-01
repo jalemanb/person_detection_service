@@ -41,6 +41,7 @@ class SOD:
             yolo_model_path
         )  # load a pretrained model (recommended for training)
 
+
         # ReID System
         self.kpr_reid = KPR_torch(
             feature_extracture_cfg_path, 
@@ -191,7 +192,6 @@ class SOD:
             # print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
             total_execution_time += masked_detections_time
 
-            self.logger.debug(f"DETECTIONS: {len(detections)}")
             # If no detection (No human) then stay on reid mode and return Nothing
             if not (len(detections) > 0):
                 self.reid_mode = True
@@ -199,6 +199,7 @@ class SOD:
             
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, person_kpts, poses, track_ids = detections
+            self.logger.debug(f"DETECTIONS: {len(detections_imgs)}")
 
             # Up to This Point There are Only Yolo Detections #####################################
 
@@ -208,6 +209,9 @@ class SOD:
                 tracked_ids = track_ids.tolist()
                 # Check which boxes are worth trying to Re-ID
                 to_test = [tracked_ids.index(i) for i in tracked_ids if i not in self.blacklist]
+
+                # print("self.blacklist", self.blacklist)
+                # print("to_test", to_test)
 
                 if len(to_test) > 0:
                     # Measure time for `feature_extraction` - Extract features to all subimages
@@ -237,10 +241,20 @@ class SOD:
                     iknn_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     # print(f"iknn_time execution time: {iknn_time:.2f} ms")
                     total_execution_time += iknn_time
-                    self.logger.debug(f"CLASSIFICATION: {classification}")
+                    # self.logger.debug(f"CLASSIFICATION: {classification}")
+
+                    # print("Visibilitieis", detections_features[1].T)
 
                     # When Relying only on visual features, it is necessary to reidentfy consdiering all body parts to make a decision
-                    knn_gate = (torch.sum(classification & detections_features[1].T, dim=0) >= torch.sum(detections_features[1].T, dim=0) - 1 ).cpu().numpy()
+                    # knn_gate = (torch.sum(classification[1:] & detections_features[1].T[1:], dim=0) >= torch.sum(detections_features[1].T[1:], dim=0)).cpu().numpy()
+                    # print("torch.sum(classification[1:], dim=0)", torch.sum(classification[1:], dim=0))
+                    # print("torch.sum(detections_features[1].T[1:], dim=0)", torch.sum(detections_features[1].T[1:], dim=0))
+                    # knn_gate = (torch.sum(classification[1:], dim=0) >= torch.sum(detections_features[1].T[1:], dim=0)).cpu().numpy()
+
+                    sum1 = torch.sum(classification[1:], dim=0)
+                    sum2 = torch.sum(detections_features[1].T[1:], dim=0)
+                    positive_mask = (sum1 > 0) & (sum2 > 0)
+                    knn_gate = ((sum1 >= sum2) & positive_mask).cpu().numpy()
 
                     gate = knn_gate
 
@@ -259,13 +273,11 @@ class SOD:
                         valid_idxs = []
                         similarity = [0 for i in range(len(tracked_ids))]
 
-    
                     # If there is only valid detection 
                     elif np.sum(gate) == 1:
                         self.reid_mode = False
                         similarity = [0 for i in range(len(tracked_ids))]
                         similarity[valid_idxs[0]] = 1
-
 
                     # If there are multiple valid detections 
                     elif np.sum(gate) > 1:
@@ -300,26 +312,51 @@ class SOD:
                 #### IF SPATIAL AMBIGUITY IS PRESENT GO BACK TO ADD APPEARANCE INFORMATION FOR ASSOCIATION ###############
                 second_best_idx = 0
 
+
+                if len(valid_idxs) > 0: 
+                    # Activate Reid mode when target is reaching the edges of the image
+                    x1, y1, x2, y2 = bboxes[valid_idxs[0]]
+
+                    if x1 < 20 or x2 > img_w - 20:
+
+
+                        self.reid_mode = True
+                        self.store_features = False
+                        # print("x1", x1, "x2", x2)
+
+
                 # Check if bounding boxes are too close to the target
                 # if so return nothing and change to reid_mode
                 if len(valid_idxs) > 0  and len(tracked_ids) > 1:
 
-                    distractor_bbox = np.delete(bboxes, valid_idxs[0], axis=0)
-                    ious_to_target = iou_vectorized(bboxes[valid_idxs[0]],  distractor_bbox)
+                    # distractor_bbox = np.delete(bboxes, valid_idxs[0], axis=0)
+                    ious_to_target = iou_vectorized(bboxes[valid_idxs[0]],  bboxes)
+                    ious_to_target = np.where(ious_to_target == 1, -1, ious_to_target)
+
                     distances = compute_center_distances(bboxes[valid_idxs[0]],  bboxes)
                     distances = np.where(distances > 0, distances, np.inf)
                     second_best_idx = np.argmin(distances)
-
+                    
                     if  np.any(ious_to_target > 0.):
                         self.store_features = False
 
-                    if  np.any(ious_to_target > 0.):
+                    if  np.any(ious_to_target > 0.2):
+
                         self.whitelist = []
 
+                        for i, iou in enumerate(ious_to_target):
+
+                            if iou > 0.2 and tracked_ids[i] in self.blacklist:
+
+                                self.blacklist.pop(self.blacklist.index(tracked_ids[i]))
+
                         # Enable the closest box to the target to be reidentified
-                        if tracked_ids[second_best_idx] in self.blacklist:
-                            self.blacklist.pop(self.blacklist.index(tracked_ids[second_best_idx]))
+                        # if tracked_ids[second_best_idx] in self.blacklist:
+                        #     self.blacklist.pop(self.blacklist.index(tracked_ids[second_best_idx]))
+
                         self.reid_mode = True
+
+                
 
                 if not self.reid_mode:
                     for target_id in self.whitelist:
@@ -370,9 +407,6 @@ class SOD:
                     end_time = time.time()
                     incremental_time = (end_time - start_time) * 1000  # Convert to milliseconds
                     # print(f"INCREMENTAL execution time: {incremental_time:.2f} ms")
-
-
-
 
             # Return results
             return (poses, bboxes, person_kpts, track_ids, similarity, valid_idxs)

@@ -128,6 +128,8 @@ class Bucket:
                                                 vis, 
                                                 self.mean_prototypes_vis[:self.active_prototypes_num], 
                                                 distance_type="euclidean")
+            
+            # print("Membership", memership)
                         
             min_dist, min_idx = torch.min(memership, dim=1)
 

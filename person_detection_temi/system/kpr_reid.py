@@ -8,6 +8,7 @@ from person_detection_temi.submodules.keypoint_promptable_reidentification.torch
 import torch
 from torch.nn import functional as F
 import numpy as np
+import os
 
 torch.backends.cudnn.benchmark = True  # Optimize for varying input sizes
 torch.backends.cudnn.enabled = True  # Enable cuDNN optimizations (GPU only)
@@ -60,6 +61,8 @@ class KPR(object):
     def __init__(self, cfg_file, kpt_conf = 0., device = 'cpu') -> None:
 
         cfg = build_config(config_path=cfg_file)
+
+        cfg.model.load_weights = os.path.join(os.path.dirname(cfg_file), "kpr_market_IN_89.58_95.87_41898449.pth.tar")
         self.cfg = cfg
         self.kpt_conf = kpt_conf
         self.device = device

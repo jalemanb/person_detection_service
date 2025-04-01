@@ -206,14 +206,17 @@ def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
         model.memory_bucket.save("/home/enrique/bucket.npz")
 
     # Close OpenCV windows
-    cv2.destroyAllWindows()
+    if show_img:
+        cv2.destroyAllWindows()
 
 def main():
 
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
-    # datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
-    datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
-    # datasets = ["ocl_demo2"]
+    datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    # datasets = ["corridor2"]
+    # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
+
     for dataset in datasets:
         evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
 

@@ -69,6 +69,9 @@ def iknn(feats, feats_vis, memory_f, memory_v, memory_l, num_samples = 0, k =10,
         largest=False
     )  # [k, batch, 6]
 
+    # print("top_k_values")
+    # print(top_k_values)
+
     # Retrieve the corresponding labels for the k nearest neighbors This is the knn-prediction
     top_k_labels = labels_A[top_k_indices]  # Shape [k, batch, 6], labels for nearest N indices
 
@@ -77,6 +80,8 @@ def iknn(feats, feats_vis, memory_f, memory_v, memory_l, num_samples = 0, k =10,
 
     # Apply threshold influence: Set labels to zero where distances exceed the threshold
     valid_labels = top_k_labels * binary_mask  # Zero out labels where threshold is exceeded
+    # print("valid_labels")
+    # print(valid_labels)
 
     # Perform classification by majority vote (sum up valid labels and classify based on majority vote)
     classification = (valid_labels.sum(dim=0) > (k // 2)).to(torch.bool)  # Shape [batch, 6]
