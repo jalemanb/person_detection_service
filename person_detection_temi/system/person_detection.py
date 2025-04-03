@@ -63,6 +63,8 @@ class HumanPoseEstimationNode(Node):
 
         yolo_path = os.path.join(pkg_shared_dir, 'models', yolo_model)
         feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
+        feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid_in_shape_inferred.onnx')
+
         bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
 
         # Loading Template IMG
@@ -77,6 +79,7 @@ class HumanPoseEstimationNode(Node):
         self.model = SOD(
             yolo_model_path = yolo_path, 
             feature_extracture_cfg_path = feature_extracture_cfg_path, 
+            feature_extracture_model_path=feature_extracture_model_path,
             tracker_system_path=bytetrack_path
         )
         self.model.to(device)

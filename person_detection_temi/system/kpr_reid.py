@@ -177,8 +177,6 @@ class KPR(object):
         if self.cfg.test.normalize_feature:
             f_ = self.normalize(f_)
 
-        if return_heatmaps:
-            return f_, v_, ready_prompts
 
         return f_, v_
 

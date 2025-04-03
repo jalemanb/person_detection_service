@@ -11,6 +11,8 @@ import time
 import numpy as np
 
 from person_detection_temi.system.kpr_reid import KPR as KPR_torch
+from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
+
 from person_detection_temi.system.memory import Bucket
 from person_detection_temi.system.iknn import iknn
 from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
@@ -20,6 +22,7 @@ class SOD:
     def __init__(self, 
                  yolo_model_path, 
                  feature_extracture_cfg_path, 
+                 feature_extracture_model_path = "",
                  tracker_system_path = "",
                  logger_level=logging.DEBUG,
             ) -> None:
@@ -41,13 +44,22 @@ class SOD:
             yolo_model_path
         )  # load a pretrained model (recommended for training)
 
-
-        # ReID System
-        self.kpr_reid = KPR_torch(
-            feature_extracture_cfg_path, 
-            kpt_conf=0., 
-            device='cuda' if torch.cuda.is_available() else 'cpu'
-        )
+        if feature_extracture_model_path != "":
+            # ReID System ONNX based for Acceleration
+            self.kpr_reid = KPR_onnx(
+                feature_extracture_cfg_path, 
+                feature_extracture_model_path, 
+                kpt_conf=0., 
+                device='cuda' if torch.cuda.is_available() else 'cpu'
+            )
+        else:
+            # Based on TORCH for testing
+            # ReID System
+            self.kpr_reid = KPR_torch(
+                feature_extracture_cfg_path, 
+                kpt_conf=0., 
+                device='cuda' if torch.cuda.is_available() else 'cpu'
+            )
 
         self.template = None
         self.template_features = None
