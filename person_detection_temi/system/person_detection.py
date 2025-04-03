@@ -52,7 +52,7 @@ class HumanPoseEstimationNode(Node):
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
         pkg_shared_dir = get_package_share_directory('person_detection_temi')
 
-        yolo_models = ['yolo11n-pose.pt']
+        yolo_models = ['yolo11n-pose.engine','yolo11n-pose.pt']
         yolo_model = None
 
         for model_file in yolo_models:
@@ -124,7 +124,7 @@ class HumanPoseEstimationNode(Node):
         # ApproximateTimeSynchronizer allows small timestamp mismatch
         self.ts = ApproximateTimeSynchronizer(
             [self.rgb_sub, self.depth_sub, self.info_sub],
-            queue_size=10,
+            queue_size=1,
             slop=0.1  # seconds
         )
         self.ts.registerCallback(self.image_callback)
@@ -194,7 +194,7 @@ class HumanPoseEstimationNode(Node):
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
             self.get_logger().info('Publishing Compressed Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, compressed=True)
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=True)
 
         #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image.get_subscription_count() > 0:
