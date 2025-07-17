@@ -14,6 +14,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/detect.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/vis.launch.py']),
         ('share/' + package_name + '/models', glob('models/*')),
         ('share/' + package_name + '/template_imgs', glob('template_imgs/*')),
         ('share/' + package_name + '/rviz', glob('rviz/*')),

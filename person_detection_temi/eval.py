@@ -10,7 +10,7 @@ import time
 save_boxes = True
 save_bucket = False
 save_time = True
-show_img = False
+show_img = True
 
 def save_execution_times(times, filename):
     """
@@ -65,7 +65,7 @@ def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=Fa
         for row in rows_array:
             f.write(' '.join(map(str, row)) + '\n')
 
-def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
+def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path):
 
     print("TIME TO EVALUATE")
 
@@ -75,13 +75,26 @@ def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
 
     # Load model paths
     pkg_shared_dir = get_package_share_directory('person_detection_temi')
-    yolo_path = os.path.join(pkg_shared_dir, 'models', 'yolo11n-pose.engine')
+
+    yolo_models = ['yolo11n-pose.engine','yolo11n-pose.pt']
+    yolo_model = None
+
+    for model_file in yolo_models:
+        file_path = os.path.join(pkg_shared_dir, "models", model_file)
+        if os.path.exists(file_path):
+            yolo_model = file_path
+            break
+
+    yolo_path = os.path.join(pkg_shared_dir, 'models', yolo_model)
     bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
     feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
+    feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid_in_shape_inferred.onnx')
+    # feature_extracture_model_path = ""
 
     ### OCL Datasets ####################################################
     ocl_datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
     robot_datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    crowd_datasets = ["crowd1", "crowd2", "crowd3", "crowd4"]
 
 
     if dataset  in ocl_datasets:
@@ -99,19 +112,21 @@ def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
 
 
     ### Robocup Datasets ####################################################
-    # dataset = "crowd3"
-
-    # rgb_dir = f"/home/enrique/Videos/crowds/{dataset}/"
-    # template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
+    if dataset in crowd_datasets:
+        rgb_dir = f"/home/enrique/Videos/crowds/{dataset}/"
+        template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### Robocup Datasets ####################################################
 
     template_img = cv2.imread(template_img_path)
+
 
     # Setup Detection Pipeline
     model = SOD(
         yolo_model_path = yolo_path, 
         feature_extracture_cfg_path = feature_extracture_cfg_path, 
-        tracker_system_path=bytetrack_path
+        feature_extracture_model_path = feature_extracture_model_path,
+        tracker_system_path = bytetrack_path,
+        debug = save_bucket
     )
     model.to(device)
 
@@ -212,13 +227,13 @@ def evaluation(dataset, ocl_dataset_path, robot_dataset_path):
 def main():
 
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
-    datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    # datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
-
+    datasets = ["lab_corridor"]
     for dataset in datasets:
-        evaluation(dataset, ocl_dataset_path = "/home/temi/datasets/ocl", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
+        evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", crowd_dataset_path = "/home/enrique/Videos/crowds", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
 
 if __name__ == '__main__':
     main()

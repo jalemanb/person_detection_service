@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Pose, TransformStamped, PoseArray
+from person_detection_msgs.msg import PoseCandidate, PoseCandidateArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
 import numpy as np
@@ -22,6 +23,11 @@ class HumanPoseEstimationNode(Node):
         super().__init__('pose_estimation_node')
 
         # Create publishers
+        # self.publisher_human_pose = self.create_publisher(
+        #     PoseCandidateArray, 
+        #     '/detections', 
+        #     10
+        # )
         self.publisher_human_pose = self.create_publisher(
             PoseArray, 
             '/detections', 
@@ -37,6 +43,8 @@ class HumanPoseEstimationNode(Node):
             '/human_detection/img_raw', 
             10
         )
+
+        self.temp_counter_ = 0
  
         # Create a TransformBroadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -67,26 +75,16 @@ class HumanPoseEstimationNode(Node):
 
         bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
 
-        # Loading Template IMG
-        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'crowd2.png')
-        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_sidewalk.jpg')
-        template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_ultimate_2.png')
-        # template_img_path = os.path.join(pkg_shared_dir, 'template_imgs', 'template_rgb_hallway_2.jpg')
-
-        self.template_img = cv2.imread(template_img_path)
-
         # Setting up Detection Pipeline
         self.model = SOD(
             yolo_model_path = yolo_path, 
             feature_extracture_cfg_path = feature_extracture_cfg_path, 
-            feature_extracture_model_path=feature_extracture_model_path,
+            feature_extracture_model_path = "",
             tracker_system_path=bytetrack_path
         )
+
         self.model.to(device)
         self.get_logger().info('Deep Learning Model Armed')
-
-        # Initialize the template
-        self.model.template_update(self.template_img)
 
         # Warmup inference (GPU can be slow in the first inference)
         self.model.detect(
@@ -105,7 +103,6 @@ class HumanPoseEstimationNode(Node):
 
         # Combine the rotations
         self.combined_rotation = rot_x * rot_z
-
         
         # Subscribers using message_filters
         self.depth_sub = Subscriber(
@@ -151,13 +148,15 @@ class HumanPoseEstimationNode(Node):
         cx = info_msg.k[2]
         cy = info_msg.k[5]
 
-
         # Process the images and estimate pose
         self.process_images(rgb_image, depth_image, [fx, fy, cx, cy])
 
     def process_images(self, rgb_image, depth_image, camera_params):
         # Your pose estimation logic here
         # For demonstration, let's assume we get the pose from some function
+        if self.temp_counter_  == 5:
+            self.model.set_target_id()
+        self.temp_counter_ +=1
 
         start_time = time.time()
         ############################
@@ -165,46 +164,37 @@ class HumanPoseEstimationNode(Node):
         ############################
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
-
-
             
         self.get_logger().info(f"Model Inference Time: {execution_time} ms")
 
         person_poses = []
-        bbox = []
         kpts = []
-        conf = []
-        valid_idxs = []
         tracked_ids = []
-
-        # self.get_logger().info(f"Results: {results} ms")
 
         if results is not None:
 
-
-            person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
-
-            person_poses = person_poses[valid_idxs]
+            person_poses, bbox, kpts, tracked_ids = results
+            target_id = self.model.target_id
 
             person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
 
             # Generate and publish the point cloud
             if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
-                self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
+                # self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
                 # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
                 self.publish_human_pose(person_poses, [0., 0., 0., 1.], "base_link")
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
-            self.get_logger().info('Publishing Compressed Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=True)
+            # self.get_logger().info('Publishing Compressed Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, tracked_ids = tracked_ids, target_id = target_id,  compressed=True)
 
-        #Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
+        # Publish Image with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image.get_subscription_count() > 0:
-            self.get_logger().info('Publishing Images with Detections for Debugging Purposes')
-            self.publish_debug_img(rgb_image, bbox, kpts = kpts, valid_idxs = valid_idxs, confidences = conf,  tracked_ids = tracked_ids, compressed=False)
+            # self.get_logger().info('Publishing Images with Detections for Debugging Purposes')
+            self.publish_debug_img(rgb_image, bbox, kpts = kpts, tracked_ids = tracked_ids, target_id = target_id, compressed=False)
 
-    def publish_debug_img(self, rgb_img, boxes, kpts, valid_idxs, confidences, tracked_ids, compressed = True):
+    def publish_debug_img(self, rgb_img, boxes, kpts, tracked_ids, target_id = -1,  compressed = True):
         color_kpts = (255, 0, 0) 
         radius_kpts = 10
         thickness = 2
@@ -217,35 +207,28 @@ class HumanPoseEstimationNode(Node):
                 # Invalid detections go red
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
 
-                if len(valid_idxs) == 1:
-                    # If there is only one valid detection paint it green
-                    correct_color = (0, 255, 0) 
-
-                elif len(valid_idxs) > 1:
-                    # If there are multiple valid detections paint them blue
-                    correct_color = (255, 0, 0)
-
-                if i in valid_idxs:
+                # overlay the Target person, this is to be considered later on
+                if tracked_ids[i] == target_id:
                     alpha = 0.2
                     overlay = rgb_img.copy()
-                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), correct_color, -1)
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
                     cv2.addWeighted(overlay, alpha, rgb_img, 1 - alpha, 0, rgb_img)
 
                 # Just for debugging
-                cv2.putText(rgb_img, f"{confidences[i]:.2f}" , (x2-10, y2-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1 + int((x2-x1)/2), y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-                kpt = kpts[i]
-                for j in range(kpt.shape[0]):
-                    u = kpt[j, 0]
-                    v = kpt[j, 1]
-                    cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+                # kpt = kpts[i]
+                # for j in range(kpt.shape[0]):
+                #     u = kpt[j, 0]
+                #     v = kpt[j, 1]
+                #     cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
 
         if compressed:
             self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
-        
+
+
     def publish_human_pose(self, poses, orientation, frame_id):
 
         # Publish the pose with covariance
@@ -253,8 +236,9 @@ class HumanPoseEstimationNode(Node):
         pose_array_msg.header.stamp = self.get_clock().now().to_msg()
         pose_array_msg.header.frame_id = frame_id
 
-        for pose in poses:
+        for idx, pose in enumerate(poses):
             pose_msg = Pose()
+
             # Set the rotation using the composed quaternion
             pose_msg.position.x = pose[0]
             pose_msg.position.y = pose[1]
@@ -269,6 +253,29 @@ class HumanPoseEstimationNode(Node):
 
         self.publisher_human_pose.publish(pose_array_msg)
 
+    # def publish_human_pose(self, poses, orientation, frame_id):
+
+    #     # Publish the pose with covariance
+    #     pose_array_msg = PoseCandidateArray()
+    #     pose_array_msg.header.stamp = self.get_clock().now().to_msg()
+    #     pose_array_msg.header.frame_id = frame_id
+
+    #     for idx, pose in enumerate(poses):
+    #         pose_msg = PoseCandidate()
+
+    #         # Set the rotation using the composed quaternion
+    #         pose_msg.pose.position.x = pose[0]
+    #         pose_msg.pose.position.y = pose[1]
+    #         pose_msg.pose.position.z = 0.
+    #         # Set the rotation using the composed quaternion
+    #         pose_msg.pose.orientation.x = 0.
+    #         pose_msg.pose.orientation.y = 0.
+    #         pose_msg.pose.orientation.z = 0.
+    #         pose_msg.pose.orientation.w = 1.
+    #         # Create the pose Array
+    #         pose_array_msg.poses.append(pose_msg)
+
+    #     self.publisher_human_pose.publish(pose_array_msg)
 
     def convert_to_frame(self, poses, from_frame = 'source_frame', to_frame = 'base_link'):
         

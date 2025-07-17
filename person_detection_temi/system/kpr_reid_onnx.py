@@ -50,7 +50,7 @@ def compute_visibility_torch(kpts_batch, threshold=0.5):
     for i, part in enumerate(['head', 'torso', 'arms', 'legs', 'feet']):
         indices = torch.tensor(k_five[part], device=device)
         part_valid = is_valid[:, indices]  # [batch, num_kpts]
-        visibility[:, i + 1] = part_valid.any(dim=1)
+        visibility[:, i + 1] = part_valid.all(dim=1)
 
     # Index 0: overall visibility — if any of the other 5 are visible
     visibility[:, 0] = visibility[:, 1:].any(dim=1)
