@@ -174,8 +174,8 @@ class KPR(object):
         # f_, v_, _, _ = features
         f_, _, _, _ = features
 
-        if self.cfg.test.normalize_feature:
-            f_ = self.normalize(f_)
+        # if self.cfg.test.normalize_feature:
+        #     f_ = self.normalize(f_)
 
 
         return f_, v_

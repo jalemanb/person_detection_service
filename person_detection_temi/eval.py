@@ -7,9 +7,9 @@ from ament_index_python.packages import get_package_share_directory
 from person_detection_temi.system.SOD import SOD
 import time
 
-save_boxes = True
+save_boxes = False
 save_bucket = False
-save_time = True
+save_time = False
 show_img = True
 
 def save_execution_times(times, filename):
@@ -124,16 +124,15 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     model = SOD(
         yolo_model_path = yolo_path, 
         feature_extracture_cfg_path = feature_extracture_cfg_path, 
-        feature_extracture_model_path = feature_extracture_model_path,
+        feature_extracture_model_path = "",
         tracker_system_path = bytetrack_path,
-        debug = save_bucket
     )
     model.to(device)
 
+    model.target_id = 1
+
     # Initialize the template
-    model.template_update(template_img)
     ########################################################################################################
-    model.set_track_id(1)
 
     results_bboxes_file = rgb_dir + f"{dataset}_bboxes_results.txt"
     results_times_file = rgb_dir + f"{dataset}_times_results.txt"
@@ -175,7 +174,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
 
         if results is not None:
 
-            person_poses, bbox, kpts, tracked_ids, conf, valid_idxs = results
+            person_poses, bbox, kpts, tracked_ids, = results
 
             for i in range(len(bbox)):
 
@@ -186,18 +185,21 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
                     cv2.putText(rgb_img, f"ID: {tracked_ids[i]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
-            if len(valid_idxs) != 0 :
-                if save_boxes:
-                    bboxes.append(bbox[valid_idxs].tolist())
+            if model.target_id in tracked_ids:
 
-                # **Draw Bounding Boxes on the Image**
-                for i, valid_id in enumerate(valid_idxs):
-                    id = tracked_ids[valid_id]
-                    
-                    x1, y1, x2, y2 = map(int, bbox[valid_id])
-                    
-                    if show_img:
-                        cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green Box
+                idx = np.where(tracked_ids == model.target_id)[0][0]
+
+                print("idx", idx, tracked_ids[idx])
+
+                if save_boxes:
+                    bboxes.append(bbox[idx].tolist())
+
+                id = tracked_ids[idx]
+                
+                x1, y1, x2, y2 = map(int, bbox[idx])
+                
+                if show_img:
+                    cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green Box
 
             else:
                 if save_boxes:
@@ -208,7 +210,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         # Show the image with bounding boxes
         if show_img:
             cv2.imshow("Detection", rgb_img)
-            cv2.waitKey(3)  # Add small delay to update the window
+            cv2.waitKey(0)  # Add small delay to update the window
 
     # Save Bounding Boxes to File
     if save_boxes:
@@ -217,8 +219,6 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     if save_time:
         save_execution_times(times, results_times_file)
 
-    if save_bucket: 
-        model.memory_bucket.save("/home/enrique/bucket.npz")
 
     # Close OpenCV windows
     if show_img:
@@ -232,6 +232,8 @@ def main():
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
     datasets = ["lab_corridor"]
+    # datasets = ["room"]
+
     for dataset in datasets:
         evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", crowd_dataset_path = "/home/enrique/Videos/crowds", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")
 

@@ -6,17 +6,70 @@ settings.ONLINE = False
 
 from ultralytics import YOLO
 import torch.nn.functional as F
+from torch.optim import Adam
+import torch.nn as nn
 import torch
 import cv2
 import time
 import numpy as np
 import threading
 
-
 from person_detection_temi.system.kpr_reid import KPR as KPR_torch
 from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
-
 from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
+
+def get_sinusoid_encoding(n_position, d_hid):
+    """Sinusoidal positional encoding: shape (1, n_position, d_hid)"""
+    position = torch.arange(n_position, dtype=torch.float32).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_hid, 2, dtype=torch.float32) * -(np.log(10000.0) / d_hid))
+    
+    pe = torch.zeros(n_position, d_hid)
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    return pe.unsqueeze(0)  # shape: (1, n_position, d_hid)
+
+# ---- Model ----
+class TinyTransformer(nn.Module):
+    def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout = 0.3):
+        super().__init__()
+        self.d_model = d_model
+        self.seq_len = seq_len
+
+        # CLS token (1, 1, 512)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        
+        # Positional embeddings for CLS + 6 tokens → total 7
+        self.register_buffer("pos_embed", get_sinusoid_encoding(seq_len + 1, d_model))  # [1, 7, 512]
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.dropout = dropout
+
+        # MLP classifier
+        self.mlp_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            # nn.Dropout(self.dropout),
+            nn.Linear(d_model, num_classes)
+        )
+
+    def forward(self, x):  # x: (B, 6, 512)
+        B = x.size(0)
+
+        # Prepend CLS token
+        cls_token = self.cls_token.expand(B, 1, self.d_model)  # (B, 1, 512)
+        x = torch.cat([cls_token, x], dim=1)  # (B, 7, 512)
+
+        # Add positional embeddings
+        x = x + self.pos_embed[:, :x.size(1), :]
+
+        # Transformer
+        x = self.transformer(x)  # (B, 7, 512)
+        cls_output = x[:, 0]     # Take CLS token output
+
+        return self.mlp_head(cls_output)  # (B, num_classes), (B, 512)
 
 class SOD:
     def __init__(self, 
@@ -68,6 +121,17 @@ class SOD:
         self.start = True
         ############################
 
+        # ONLINE training ############################
+        self.transformer_classifier = TinyTransformer()
+        self.transformer_classifier.to(self.device)
+        self.classifier_optimizer = Adam(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-4)
+        self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([3.0]).to(self.device))
+        self.class_prediction_thr = 0.6
+        self.reid_stream = torch.cuda.Stream()        
+        self.yolo_stream = torch.cuda.Stream()        
+
+        ##############################################
+
         # Intel Realsense Values
         self.fx, self.fy, self.cx, self.cy = None, None, None, None
 
@@ -108,13 +172,15 @@ class SOD:
 
             # Measure time for `masked_detections`
             start_time = time.time()
-            detections = self.masked_detections(
-                img_rgb, 
-                img_depth, 
-                detection_class=detection_class, 
-                track = True, 
-                detection_thr=0.0
-            )
+            with torch.cuda.stream(self.yolo_stream):
+                detections = self.masked_detections(
+                    img_rgb, 
+                    img_depth, 
+                    detection_class=detection_class, 
+                    track = True, 
+                    detection_thr=0.0
+                )
+            self.yolo_stream.synchronize()  # Wait for GPU ops to finish
             end_time = time.time()
             masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
             # print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
@@ -125,7 +191,6 @@ class SOD:
             
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, poses, track_ids = detections
-            # self.logger.debug(f"DETECTIONS: {len(detections_imgs)}")
 
             # If no detection (No human) then stay on reid mode and return Nothing
             if self.target_id is not None and self.target_id not in track_ids:
@@ -134,18 +199,16 @@ class SOD:
                         args=(detections_imgs, detection_kpts, track_ids),
                         daemon=True
                     ).start()
-            elif self.target_id is not None and self.target_id in track_ids and self.start:
+            elif self.target_id is not None and self.target_id in track_ids:
                 # Collect samples for online training the feature extractor in another train
                 threading.Thread(
                         target=self.updating_reid,
                         args=(detections_imgs, detection_kpts, track_ids),
                         daemon=True
                     ).start()
-                self.start = False
 
             # Return results
             return (poses, bboxes, detection_kpts, track_ids)
-
 
     def masked_detections(
             self, 
@@ -229,41 +292,127 @@ class SOD:
                 verbose = False,
             )
 
+    # def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
+    #     if not self.reid_lock.acquire(blocking=False):
+    #         return  # Skip if already running
+    #     try:
+    #         self.target_feats = self.feature_extraction(detections_imgs, detection_kpts)
+
+    #     finally:
+    #         self.reid_lock.release()
+
     def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
             return  # Skip if already running
         try:
-            self.target_feats = self.feature_extraction(detections_imgs, detection_kpts)
+            with torch.cuda.stream(self.reid_stream):
+
+                #  Feature extraction
+                if self.start:
+                    self.target_feats = self.feature_extraction(detections_imgs, detection_kpts)
+                    self.start = False
+                    return
+                else:
+                    feats = self.feature_extraction(detections_imgs, detection_kpts)
+
+                # Classification - Online Learning
+                self.transformer_classifier.train()
+                # Propagate Visibility to Part Features
+                visible_features = feats[0]*feats[1].unsqueeze(-1)
+
+                # Creating Labels for online training
+
+                if visible_features.shape[0] > 1:
+                    target_id_idx = np.where(tracked_ids == self.target_id)[0]
+                    label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
+                    label[target_id_idx, :] = 1
+                else:
+                    pseudo_negatives = torch.randn(1, 6, 512).to(self.device) # generate pseudonegative samples from a gaussian
+                    pseudo_negatives = pseudo_negatives / pseudo_negatives.norm(dim=2, keepdim=True)
+                    visible_features = torch.cat([pseudo_negatives, visible_features], dim=0)  # shape [2, 6, 512]
+                    label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
+                    label[1, :] = 1
+
+                logits = self.transformer_classifier(visible_features)
+
+                # print("TRACKS", tracked_ids)
+                # print("LOGITS:", logits.shape, logits.T)
+                # print("LABELS", label.shape, label.T)
+                
+                print("Prediction_thr:", self.class_prediction_thr)
+                print("Probs:", torch.sigmoid(logits).detach().cpu().numpy().T)
+
+                best_prediction = torch.sigmoid(logits)[label.bool()].item()
+                alpha = 0.2
+
+                if best_prediction >= self.class_prediction_thr:
+                    self.class_prediction_thr = alpha*self.class_prediction_thr + (1 - alpha)*best_prediction
+
+
+                loss = self.classifier_criterion(logits, label)
+
+                self.classifier_optimizer.zero_grad()
+                loss.backward()
+                self.classifier_optimizer.step()  
+
+            self.reid_stream.synchronize()
 
         finally:
             self.reid_lock.release()
+
+    # def reidentification(self, detections_imgs, detection_kpts, tracked_ids):
+    #     if not self.reid_lock.acquire(blocking=False):
+    #         return  # Skip if already running
+
+    #     try:
+    #         if self.target_feats is not None:
+    #             # Here is the reidentification procedure
+    #             f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
+
+    #             # result = self.kpr_reid.compare(f_, self.target_feats[0], v_, self.target_feats[1])
+    #             result = self.kpr_reid.compare(F.normalize(f_, p=2, dim=2), F.normalize(self.target_feats[0], p=2, dim=2), v_, self.target_feats[1])
+
+    #             # self.features torch.Size([1, 6, 512])
+    #             # self.visibilities torch.Size([1, 6])
+    #             # RESULT
+    #             # torch.Size([1, 1])
+    #             # torch.Size([6, 1, 1])
+
+    #             min_idx = np.argmin(result[0])
+    #             min_dist = result[0][min_idx, :]
+
+    #             if min_dist < 0.7:
+    #                 self.target_id = tracked_ids[min_idx]
+    #     finally:
+    #         self.reid_lock.release()
 
     def reidentification(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
             return  # Skip if already running
 
         try:
-            if self.target_feats is not None:
-                # Here is the reidentification procedure
-                f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
+            with torch.cuda.stream(self.reid_stream):
 
-                result = self.kpr_reid.compare(f_, self.target_feats[0], v_, self.target_feats[1])
-                # self.features torch.Size([1, 6, 512])
-                # self.visibilities torch.Size([1, 6])
-                # RESULT
-                # torch.Size([1, 1])
-                # torch.Size([6, 1, 1])
+                if self.target_feats is not None:
+                    # Here is the reidentification procedure
+                    f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
 
-                min_idx = np.argmin(result[0])
-                min_dist = result[0][min_idx, :]
-                print(min_dist)
+                    visible_features = f_*v_.unsqueeze(-1)
 
-                if min_dist < 0.7:
-                    self.target_id = tracked_ids[min_idx]
+                    self.transformer_classifier.eval()
+
+                    logits = self.transformer_classifier(visible_features)
+
+                    result = torch.sigmoid(logits).detach().cpu().numpy()
+
+                    class_idx = np.argmax(result[:, 0])
+
+                    if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
+                        self.target_id = tracked_ids[class_idx]
+
+            self.reid_stream.synchronize()
         finally:
             self.reid_lock.release()
-
-
 
     def feature_extraction(self, detections_imgs, detection_kpts):
         # Extract features for similarity check
@@ -275,7 +424,6 @@ class SOD:
         
         return (fg_, vg_)
         
-
     def get_person_pose(self, bbox, depth_img):  
         """
         Estimate the 3D position of a person using the mode of depth values inside the bounding box.
