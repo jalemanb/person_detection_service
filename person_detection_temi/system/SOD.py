@@ -145,12 +145,20 @@ class SOD:
         self.device = device
 
     def set_target_id(self):
-
         self.target_id = self.closest_person_id
+        self.class_prediction_thr = 0.6
 
-    
+
+
     def unset_target_id(self):
+        # Set the target ID to none to avoid Re-identifying when Unnecesary
         self.target_id = None
+        self.class_prediction_thr = 0.6
+
+        # Reset all the reidentifying mechanism weights to train from scratch whn apropiate
+        for layer in self.transformer_classifier.modules():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
 
     def detect(
             self, 
@@ -189,8 +197,9 @@ class SOD:
             if len(detections) < 1:
                 return None
             
+
             # YOLO Detection Results
-            detections_imgs, detection_kpts, bboxes, poses, track_ids = detections
+            detections_imgs, detection_kpts, bboxes, poses, track_ids, original_kpts = detections
 
             # If no detection (No human) then stay on reid mode and return Nothing
             if self.target_id is not None and self.target_id not in track_ids:
@@ -208,7 +217,7 @@ class SOD:
                     ).start()
 
             # Return results
-            return (poses, bboxes, detection_kpts, track_ids)
+            return (poses, bboxes, detection_kpts, track_ids, original_kpts)
 
     def masked_detections(
             self, 
@@ -225,7 +234,8 @@ class SOD:
             return []
 
         subimages = []
-        total_keypoints = []
+        original_keypoints = [] # Keypoints with respect the original image dimensions, mainly used for visualization
+        scaled_keypoints = [] # Kepints in the patch reference frame (small image) not original image
         poses = []
         bboxes = []
         track_ids = []
@@ -258,19 +268,22 @@ class SOD:
                     (x2 - x1, y2 - y1), 
                     (size[0], size[1])
                 )
-                total_keypoints.append(kpts_scaled)
+                # Appending keypoints with resepct the original image size
+                original_keypoints.append(kpts)
+                # Append keypoints with respect the bounding box patch size
+                scaled_keypoints.append(kpts_scaled)
 
         poses = np.array(poses)
         bboxes = np.array(bboxes)
         track_ids = np.array(track_ids)
         batched_imgs = torch.cat(subimages).to(device=self.device)
-        batched_kpts = torch.stack(total_keypoints, dim=0).to(device=self.device)
+        batched_scaled_kpts = torch.stack(scaled_keypoints, dim=0).to(device=self.device)
 
         # The closes person to the Camera is updated in case the ID is to be manually selected
 
         self.closest_person_id = track_ids[np.argmin(poses[:, 2])]
 
-        return [batched_imgs, batched_kpts, bboxes, poses, track_ids]
+        return [batched_imgs, batched_scaled_kpts, bboxes, poses, track_ids, original_keypoints]
 
     def detect_mot(self, img, detection_class, track = False, detection_thr = 0.5):
         # Run multiple object detection with a given desired class

@@ -210,7 +210,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         # Show the image with bounding boxes
         if show_img:
             cv2.imshow("Detection", rgb_img)
-            cv2.waitKey(0)  # Add small delay to update the window
+            cv2.waitKey(3)  # Add small delay to update the window
 
     # Save Bounding Boxes to File
     if save_boxes:

@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation as R
 import time
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from rclpy.qos import qos_profile_sensor_data
+from std_srvs.srv import Trigger
 
 class HumanPoseEstimationNode(Node):
     def __init__(self):
@@ -43,6 +44,9 @@ class HumanPoseEstimationNode(Node):
             '/human_detection/img_raw', 
             10
         )
+
+        self.set_target_id_srv = self.create_service(Trigger, 'set_target_person', self.set_target_id_callback)
+        self.unset_target_id_srv = self.create_service(Trigger, 'unset_target_person', self.unset_target_id_callback)
 
         self.temp_counter_ = 0
  
@@ -95,6 +99,7 @@ class HumanPoseEstimationNode(Node):
         
         # Frame ID from where the human is being detected
         self.frame_id = None
+        self.target_frame = 'temi/base_link'
 
         # Quaternion for 90 degrees rotation around the x-axis
         rot_x = R.from_euler('x', 90, degrees=True)
@@ -109,17 +114,20 @@ class HumanPoseEstimationNode(Node):
         self.depth_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/camera/camera/aligned_depth_to_color/image_raw/compressed',
+            '/temi/camera/aligned_depth_to_color/image_raw/compressed',
+            # '/camera/camera/aligned_depth_to_color/image_raw/compressed',
             qos_profile=qos_profile_sensor_data)
         self.rgb_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/camera/camera/color/image_raw/compressed',
+            '/temi/camera/color/image_raw/compressed',
+            # '/camera/camera/color/image_raw/compressed',
             qos_profile=qos_profile_sensor_data)
         self.info_sub = Subscriber(
             self, 
             CameraInfo, 
-            '/camera/camera/color/camera_info',
+            '/temi/camera/color/camera_info',
+            # '/camera/camera/color/camera_info',
             qos_profile=qos_profile_sensor_data)
 
         # ApproximateTimeSynchronizer allows small timestamp mismatch
@@ -129,6 +137,25 @@ class HumanPoseEstimationNode(Node):
             slop=0.1  # seconds
         )
         self.ts.registerCallback(self.image_callback)
+
+    def set_target_id_callback(self, request, response):
+        self.get_logger().info('Setting target Person received!')
+
+        self.model.set_target_id()
+
+        response.success = True
+        response.message = 'Action completed successfully.'
+        return response
+
+    def unset_target_id_callback(self, request, response):
+        self.get_logger().info('Unsetting Target Person!')
+
+        self.model.unset_target_id()
+
+        response.success = True
+        response.message = 'Action completed successfully.'
+        return response
+    
 
     def image_callback(self, rgb_msg, depth_msg, info_msg):
 
@@ -155,8 +182,8 @@ class HumanPoseEstimationNode(Node):
     def process_images(self, rgb_image, depth_image, camera_params):
         # Your pose estimation logic here
         # For demonstration, let's assume we get the pose from some function
-        if self.temp_counter_  == 5:
-            self.model.set_target_id()
+        # if self.temp_counter_  == 5:
+        #     self.model.set_target_id()
         self.temp_counter_ +=1
 
         start_time = time.time()
@@ -169,21 +196,23 @@ class HumanPoseEstimationNode(Node):
         self.get_logger().info(f"Model Inference Time: {execution_time} ms")
 
         person_poses = []
+        bbox = []
         kpts = []
         tracked_ids = []
+        target_id = None
 
         if results is not None:
 
-            person_poses, bbox, kpts, tracked_ids = results
+            person_poses, bbox, _, tracked_ids, kpts = results
             target_id = self.model.target_id
 
-            person_poses = self.convert_to_frame(person_poses, self.frame_id, "base_link")
+            person_poses = self.convert_to_frame(person_poses, self.frame_id, self.target_frame)
 
             # Generate and publish the point cloud
             if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
                 # self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
                 # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
-                self.publish_human_pose(person_poses, [0., 0., 0., 1.], "base_link")
+                self.publish_human_pose(person_poses, [0., 0., 0., 1.], self.target_frame)
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
@@ -195,7 +224,7 @@ class HumanPoseEstimationNode(Node):
             # self.get_logger().info('Publishing Images with Detections for Debugging Purposes')
             self.publish_debug_img(rgb_image, bbox, kpts = kpts, tracked_ids = tracked_ids, target_id = target_id, compressed=False)
 
-    def publish_debug_img(self, rgb_img, boxes, kpts, tracked_ids, target_id = -1,  compressed = True):
+    def publish_debug_img(self, rgb_img, boxes, kpts, tracked_ids, target_id = None,  compressed = True):
         color_kpts = (255, 0, 0) 
         radius_kpts = 10
         thickness = 2
@@ -209,7 +238,7 @@ class HumanPoseEstimationNode(Node):
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
 
                 # overlay the Target person, this is to be considered later on
-                if tracked_ids[i] == target_id:
+                if target_id is not None and tracked_ids[i] == target_id:
                     alpha = 0.2
                     overlay = rgb_img.copy()
                     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 255, 0), -1)
@@ -218,11 +247,13 @@ class HumanPoseEstimationNode(Node):
                 # Just for debugging
                 cv2.putText(rgb_img, f"ID: {tracked_ids[i]}" , (x1 + int((x2-x1)/2), y1 + int((y2-y1)/2)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-                # kpt = kpts[i]
-                # for j in range(kpt.shape[0]):
-                #     u = kpt[j, 0]
-                #     v = kpt[j, 1]
-                #     cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
+                # Draw the keypoints they have to be with respect the original image dimensions
+                kpt = kpts[i]
+                for j in range(kpt.shape[0]):
+                    if kpt[j, 2] > 0.5:
+                        u = int(kpt[j, 0])
+                        v = int(kpt[j, 1])
+                        cv2.circle(rgb_img, (u, v), radius_kpts, color_kpts, thickness)
 
         if compressed:
             self.publisher_debug_detection_image_compressed.publish(self.cv_bridge.cv2_to_compressed_imgmsg(rgb_img))
