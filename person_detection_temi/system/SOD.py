@@ -1,9 +1,5 @@
 import logging
 
-from ultralytics import settings
-
-settings.ONLINE = False
-
 from ultralytics import YOLO
 import torch.nn.functional as F
 from torch.optim import Adam
@@ -148,8 +144,6 @@ class SOD:
         self.target_id = self.closest_person_id
         self.class_prediction_thr = 0.6
 
-
-
     def unset_target_id(self):
         # Set the target ID to none to avoid Re-identifying when Unnecesary
         self.target_id = None
@@ -196,7 +190,6 @@ class SOD:
 
             if len(detections) < 1:
                 return None
-            
 
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, poses, track_ids, original_kpts = detections
@@ -305,28 +298,13 @@ class SOD:
                 verbose = False,
             )
 
-    # def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
-    #     if not self.reid_lock.acquire(blocking=False):
-    #         return  # Skip if already running
-    #     try:
-    #         self.target_feats = self.feature_extraction(detections_imgs, detection_kpts)
-
-    #     finally:
-    #         self.reid_lock.release()
-
     def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
             return  # Skip if already running
         try:
             with torch.cuda.stream(self.reid_stream):
 
-                #  Feature extraction
-                if self.start:
-                    self.target_feats = self.feature_extraction(detections_imgs, detection_kpts)
-                    self.start = False
-                    return
-                else:
-                    feats = self.feature_extraction(detections_imgs, detection_kpts)
+                feats = self.feature_extraction(detections_imgs, detection_kpts)
 
                 # Classification - Online Learning
                 self.transformer_classifier.train()
@@ -335,16 +313,20 @@ class SOD:
 
                 # Creating Labels for online training
 
+                print("NUMBER OF DETECTIONS:", visible_features.shape[0])
+
                 if visible_features.shape[0] > 1:
                     target_id_idx = np.where(tracked_ids == self.target_id)[0]
                     label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
                     label[target_id_idx, :] = 1
+                    self.start = False
                 else:
                     pseudo_negatives = torch.randn(1, 6, 512).to(self.device) # generate pseudonegative samples from a gaussian
                     pseudo_negatives = pseudo_negatives / pseudo_negatives.norm(dim=2, keepdim=True)
                     visible_features = torch.cat([pseudo_negatives, visible_features], dim=0)  # shape [2, 6, 512]
                     label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
                     label[1, :] = 1
+
 
                 logits = self.transformer_classifier(visible_features)
 
@@ -373,58 +355,36 @@ class SOD:
         finally:
             self.reid_lock.release()
 
-    # def reidentification(self, detections_imgs, detection_kpts, tracked_ids):
-    #     if not self.reid_lock.acquire(blocking=False):
-    #         return  # Skip if already running
-
-    #     try:
-    #         if self.target_feats is not None:
-    #             # Here is the reidentification procedure
-    #             f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
-
-    #             # result = self.kpr_reid.compare(f_, self.target_feats[0], v_, self.target_feats[1])
-    #             result = self.kpr_reid.compare(F.normalize(f_, p=2, dim=2), F.normalize(self.target_feats[0], p=2, dim=2), v_, self.target_feats[1])
-
-    #             # self.features torch.Size([1, 6, 512])
-    #             # self.visibilities torch.Size([1, 6])
-    #             # RESULT
-    #             # torch.Size([1, 1])
-    #             # torch.Size([6, 1, 1])
-
-    #             min_idx = np.argmin(result[0])
-    #             min_dist = result[0][min_idx, :]
-
-    #             if min_dist < 0.7:
-    #                 self.target_id = tracked_ids[min_idx]
-    #     finally:
-    #         self.reid_lock.release()
-
     def reidentification(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
+
             return  # Skip if already running
 
         try:
+
             with torch.cuda.stream(self.reid_stream):
 
-                if self.target_feats is not None:
-                    # Here is the reidentification procedure
-                    f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
+                # Here is the reidentification procedure
+                f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
 
-                    visible_features = f_*v_.unsqueeze(-1)
+                visible_features = f_*v_.unsqueeze(-1)
 
-                    self.transformer_classifier.eval()
+                self.transformer_classifier.eval()
 
-                    logits = self.transformer_classifier(visible_features)
+                logits = self.transformer_classifier(visible_features)
 
-                    result = torch.sigmoid(logits).detach().cpu().numpy()
+                result = torch.sigmoid(logits).detach().cpu().numpy()
 
-                    class_idx = np.argmax(result[:, 0])
+                class_idx = np.argmax(result[:, 0])
 
-                    if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
-                        self.target_id = tracked_ids[class_idx]
+                if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
+
+                    self.target_id = tracked_ids[class_idx]
 
             self.reid_stream.synchronize()
+
         finally:
+
             self.reid_lock.release()
 
     def feature_extraction(self, detections_imgs, detection_kpts):

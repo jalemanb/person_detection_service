@@ -174,7 +174,8 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
 
         if results is not None:
 
-            person_poses, bbox, kpts, tracked_ids, = results
+            person_poses, bbox, _, tracked_ids, kpts = results
+            
 
             for i in range(len(bbox)):
 
@@ -231,7 +232,7 @@ def main():
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
-    datasets = ["lab_corridor"]
+    datasets = ["sidewalk"]
     # datasets = ["room"]
 
     for dataset in datasets:

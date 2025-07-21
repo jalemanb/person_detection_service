@@ -24,16 +24,16 @@ class HumanPoseEstimationNode(Node):
         super().__init__('pose_estimation_node')
 
         # Create publishers
-        # self.publisher_human_pose = self.create_publisher(
-        #     PoseCandidateArray, 
-        #     '/detections', 
-        #     10
-        # )
         self.publisher_human_pose = self.create_publisher(
-            PoseArray, 
+            PoseCandidateArray, 
             '/detections', 
             10
         )
+        # self.publisher_human_pose = self.create_publisher(
+        #     PoseArray, 
+        #     '/detections', 
+        #     10
+        # )
         self.publisher_debug_detection_image_compressed = self.create_publisher(
             CompressedImage, 
             '/human_detection/img_compressed', 
@@ -212,7 +212,7 @@ class HumanPoseEstimationNode(Node):
             if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
                 # self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
                 # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
-                self.publish_human_pose(person_poses, [0., 0., 0., 1.], self.target_frame)
+                self.publish_human_pose(person_poses, kpts, tracked_ids, self.target_frame)
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
@@ -260,54 +260,42 @@ class HumanPoseEstimationNode(Node):
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
 
-
-    def publish_human_pose(self, poses, orientation, frame_id):
+    def publish_human_pose(self, poses, kpts, tracked_ids, frame_id):
 
         # Publish the pose with covariance
-        pose_array_msg = PoseArray()
+        pose_array_msg = PoseCandidateArray()
         pose_array_msg.header.stamp = self.get_clock().now().to_msg()
         pose_array_msg.header.frame_id = frame_id
 
-        for idx, pose in enumerate(poses):
-            pose_msg = Pose()
+
+        for idx, (pose, kpt, tracked_id) in enumerate(zip(poses, kpts, tracked_ids)):
+            pose_msg = PoseCandidate()
+
+            # Bounding Box Tracking ID
+            pose_msg.id = int(tracked_id.item())
+
+            # Target image position\
+            # The indices 0 to 5 include all the keypoints belonging to the head, nose, ears, etc.
+            # The one with the largest confidence is selected
+            best_body_part_idx = np.argmax(kpt[0:5, 2].cpu().numpy())
+
+            pose_msg.u = int(kpt[best_body_part_idx, 0].item())
+            pose_msg.v = int(kpt[best_body_part_idx, 1].item())
+            pose_msg.conf = kpt[best_body_part_idx, 2].item()
 
             # Set the rotation using the composed quaternion
-            pose_msg.position.x = pose[0]
-            pose_msg.position.y = pose[1]
-            pose_msg.position.z = 0.
+            pose_msg.pose.position.x = pose[0]
+            pose_msg.pose.position.y = pose[1]
+            pose_msg.pose.position.z = 0.
             # Set the rotation using the composed quaternion
-            pose_msg.orientation.x = 0.
-            pose_msg.orientation.y = 0.
-            pose_msg.orientation.z = 0.
-            pose_msg.orientation.w = 1.
+            pose_msg.pose.orientation.x = 0.
+            pose_msg.pose.orientation.y = 0.
+            pose_msg.pose.orientation.z = 0.
+            pose_msg.pose.orientation.w = 1.
             # Create the pose Array
             pose_array_msg.poses.append(pose_msg)
 
         self.publisher_human_pose.publish(pose_array_msg)
-
-    # def publish_human_pose(self, poses, orientation, frame_id):
-
-    #     # Publish the pose with covariance
-    #     pose_array_msg = PoseCandidateArray()
-    #     pose_array_msg.header.stamp = self.get_clock().now().to_msg()
-    #     pose_array_msg.header.frame_id = frame_id
-
-    #     for idx, pose in enumerate(poses):
-    #         pose_msg = PoseCandidate()
-
-    #         # Set the rotation using the composed quaternion
-    #         pose_msg.pose.position.x = pose[0]
-    #         pose_msg.pose.position.y = pose[1]
-    #         pose_msg.pose.position.z = 0.
-    #         # Set the rotation using the composed quaternion
-    #         pose_msg.pose.orientation.x = 0.
-    #         pose_msg.pose.orientation.y = 0.
-    #         pose_msg.pose.orientation.z = 0.
-    #         pose_msg.pose.orientation.w = 1.
-    #         # Create the pose Array
-    #         pose_array_msg.poses.append(pose_msg)
-
-    #     self.publisher_human_pose.publish(pose_array_msg)
 
     def convert_to_frame(self, poses, from_frame = 'source_frame', to_frame = 'base_link'):
         
