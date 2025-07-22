@@ -204,6 +204,9 @@ class HumanPoseEstimationNode(Node):
             person_poses, bbox, _, tracked_ids, kpts = results
             target_id = self.model.target_id
 
+            print("PERSON POSES")
+            print(person_poses)
+
             if person_poses is not None:
 
                 image_detection_array_msg, pose_array_msg = self.get_human_msgs(person_poses, kpts, tracked_ids, self.frame_id)
@@ -287,7 +290,7 @@ class HumanPoseEstimationNode(Node):
             # Target image position\
             # The indices 0 to 5 include all the keypoints belonging to the head, nose, ears, etc.
             # The one with the largest confidence is selected
-            best_body_part_idx = np.argmax(kpt[0:5, 2].cpu().numpy())
+            best_body_part_idx = np.argmax(kpt[0:5, 2])
 
             image_detection_msg.u = int(kpt[best_body_part_idx, 0].item())
             image_detection_msg.v = int(kpt[best_body_part_idx, 1].item())

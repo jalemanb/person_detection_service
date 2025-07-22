@@ -244,7 +244,7 @@ class SOD:
                 # Crop the Image
                 subimage = cv2.resize(img_rgb[y1:y2, x1:x2], size)
                 # Getting the Person Central Pose (Based on Torso Keypoints)
-                pose = self.get_person_pose([x1, y1, x2, y2], img_depth)
+                pose = self.get_person_pose([x1, y1, x2, y2], kpts, img_depth)
                 # Store all the bounding box detections and subimages in a tensor
                 subimages.append(
                     torch.tensor(subimage, dtype=torch.float16)
@@ -262,7 +262,7 @@ class SOD:
                     (size[0], size[1])
                 )
                 # Appending keypoints with resepct the original image size
-                original_keypoints.append(kpts)
+                original_keypoints.append(kpts.detach().cpu().numpy())
                 # Append keypoints with respect the bounding box patch size
                 scaled_keypoints.append(kpts_scaled)
 
@@ -396,42 +396,70 @@ class SOD:
                 )
         
         return (fg_, vg_)
-        
-    def get_person_pose(self, bbox, depth_img):  
+    
+
+    def get_person_pose(self, bbox, kpts, depth_img, win_size=1):
         """
-        Estimate the 3D position of a person using the mode of depth values inside the bounding box.
-        The output is the 3D point (x, y, z) in the camera optical frame.
+        Estimate 3D pose from keypoints and depth image using the mode of the depth
+        values in a window around confident keypoints. Vectorized implementation.
+
+        Args:
+            bbox: [x_min, y_min, x_max, y_max] (not used)
+            kpts: numpy array of shape (17, 3) where [:, 0] = u, [:, 1] = v, [:, 2] = conf
+            depth_img: numpy array HxW with depth values in mm
+            win_size: int, half-size of the window around each keypoint
+
+        Returns:
+            [x, y, z] in meters in the camera optical frame
         """
+        if depth_img is None or kpts is None or len(kpts) == 0:
+            return [-100., -100., -100.]
 
-        if depth_img is None:
-            return None
+        H, W = depth_img.shape
 
-        x_min, y_min, x_max, y_max = bbox
+        kpts = kpts.cpu().numpy()
 
-        # Clip bounds to image dimensions
-        x_min = max(0, x_min)
-        y_min = max(0, y_min)
-        x_max = min(depth_img.shape[1] - 1, x_max)
-        y_max = min(depth_img.shape[0] - 1, y_max)
+        # Filter keypoints with confidence > 0.5
+        valid_kpts = kpts[kpts[:, 2] > 0.5]
+        if len(valid_kpts) == 0:
+            return [-100., -100., -100.]
 
-        # Extract depth values inside the bounding box
-        depth_patch = depth_img[y_min:y_max + 1, x_min:x_max + 1].astype(np.float32)
-        valid_depths = depth_patch[(depth_patch > 0) & (depth_patch < 10000)]  # Filter reasonable depths (0 < d < 10m)
+        u_coords = valid_kpts[:, 0].astype(np.int32)
+        v_coords = valid_kpts[:, 1].astype(np.int32)
+
+        # Create window offsets
+        offset_range = np.arange(-win_size, win_size + 1)
+        du, dv = np.meshgrid(offset_range, offset_range)
+        du = du.flatten()
+        dv = dv.flatten()
+
+        # Broadcast offsets to all keypoints
+        all_u = (u_coords[:, None] + du[None, :]).reshape(-1)
+        all_v = (v_coords[:, None] + dv[None, :]).reshape(-1)
+
+        # Filter out-of-bounds pixel indices
+        valid_mask = (all_u >= 0) & (all_u < W) & (all_v >= 0) & (all_v < H)
+        all_u = all_u[valid_mask]
+        all_v = all_v[valid_mask]
+
+        # Sample depth values
+        depth_values = depth_img[all_v, all_u]
+        valid_depths = depth_values[(depth_values > 0) & (depth_values < 10000)]
 
         if valid_depths.size == 0:
             return [-100., -100., -100.]
 
-        # Compute mode using np.unique
+        # Mode depth estimation
         values, counts = np.unique(valid_depths, return_counts=True)
         mode_depth = values[np.argmax(counts)]
-        z = mode_depth / 1000.0  # Convert from mm to meters
+        z = mode_depth / 1000.0  # mm → meters
 
-        # Compute 2D center of the bounding box
-        u = (x_min + x_max) / 2.0
-        v = (y_min + y_max) / 2.0
+        # Use the average of all valid keypoints for projection
+        u_mean = np.mean(valid_kpts[:, 0])
+        v_mean = np.mean(valid_kpts[:, 1])
 
-        # Back-project to 3D using pinhole model
-        x = z * (u - self.cx) / self.fx
-        y = -z * (v - self.cy) / self.fy  # Negative because of camera optical frame convention
+        # Back-project to 3D
+        x = z * (u_mean - self.cx) / self.fx
+        y = -z * (v_mean - self.cy) / self.fy
 
         return [float(x), float(y), float(z)]
