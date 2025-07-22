@@ -3,7 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Pose, TransformStamped, PoseArray
-from person_detection_msgs.msg import PoseCandidate, PoseCandidateArray
+from person_detection_msgs.msg import Candidate, CandidateArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
 import numpy as np
@@ -24,16 +24,16 @@ class HumanPoseEstimationNode(Node):
         super().__init__('pose_estimation_node')
 
         # Create publishers
-        self.publisher_human_pose = self.create_publisher(
-            PoseCandidateArray, 
-            '/detections', 
+        self.human_image_detection_pub = self.create_publisher(
+            CandidateArray, 
+            '/image_detections', 
             10
         )
-        # self.publisher_human_pose = self.create_publisher(
-        #     PoseArray, 
-        #     '/detections', 
-        #     10
-        # )
+        self.human_cartesian_detection_pub = self.create_publisher(
+            PoseArray, 
+            '/cartesian_detections_local', 
+            10
+        )
         self.publisher_debug_detection_image_compressed = self.create_publisher(
             CompressedImage, 
             '/human_detection/img_compressed', 
@@ -114,20 +114,20 @@ class HumanPoseEstimationNode(Node):
         self.depth_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/temi/camera/aligned_depth_to_color/image_raw/compressed',
-            # '/camera/camera/aligned_depth_to_color/image_raw/compressed',
+            # '/temi/camera/aligned_depth_to_color/image_raw/compressed',
+            '/camera/camera/aligned_depth_to_color/image_raw/compressed',
             qos_profile=qos_profile_sensor_data)
         self.rgb_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/temi/camera/color/image_raw/compressed',
-            # '/camera/camera/color/image_raw/compressed',
+            # '/temi/camera/color/image_raw/compressed',
+            '/camera/camera/color/image_raw/compressed',
             qos_profile=qos_profile_sensor_data)
         self.info_sub = Subscriber(
             self, 
             CameraInfo, 
-            '/temi/camera/color/camera_info',
-            # '/camera/camera/color/camera_info',
+            # '/temi/camera/color/camera_info',
+            '/camera/camera/color/camera_info',
             qos_profile=qos_profile_sensor_data)
 
         # ApproximateTimeSynchronizer allows small timestamp mismatch
@@ -151,11 +151,9 @@ class HumanPoseEstimationNode(Node):
         self.get_logger().info('Unsetting Target Person!')
 
         self.model.unset_target_id()
-
         response.success = True
         response.message = 'Action completed successfully.'
         return response
-    
 
     def image_callback(self, rgb_msg, depth_msg, info_msg):
 
@@ -206,13 +204,19 @@ class HumanPoseEstimationNode(Node):
             person_poses, bbox, _, tracked_ids, kpts = results
             target_id = self.model.target_id
 
-            person_poses = self.convert_to_frame(person_poses, self.frame_id, self.target_frame)
+            if person_poses is not None:
 
-            # Generate and publish the point cloud
-            if self.publisher_human_pose.get_subscription_count() > 0 and person_poses is not None:
-                # self.get_logger().info('Publishing Person Pose that belongs to the desired Human')
-                # self.broadcast_human_pose(person_poses, [0., 0., 0., 1.])
-                self.publish_human_pose(person_poses, kpts, tracked_ids, self.target_frame)
+                image_detection_array_msg, pose_array_msg = self.get_human_msgs(person_poses, kpts, tracked_ids, self.frame_id)
+
+                # Generate and publish the point cloud
+                if self.human_image_detection_pub.get_subscription_count() > 0:
+                    # Publish the Image Detections Array msg
+                    self.human_image_detection_pub.publish(image_detection_array_msg)
+
+                # Generate and publish the point cloud
+                if self.human_cartesian_detection_pub.get_subscription_count() > 0:
+                    # Publish the Pose Detections Array msg
+                    self.human_cartesian_detection_pub.publish(pose_array_msg)
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
@@ -260,69 +264,51 @@ class HumanPoseEstimationNode(Node):
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
 
-    def publish_human_pose(self, poses, kpts, tracked_ids, frame_id):
+    def get_human_msgs(self, poses, kpts, tracked_ids, frame_id):
+        # Prepare the Image Detections Array msg
+        image_detection_array_msg = CandidateArray()
+        image_detection_array_msg.header.stamp = self.get_clock().now().to_msg()
+        image_detection_array_msg.header.frame_id = frame_id
 
-        # Publish the pose with covariance
-        pose_array_msg = PoseCandidateArray()
+        # Prepare the Pose Detections Array msg
+        pose_array_msg = PoseArray()
         pose_array_msg.header.stamp = self.get_clock().now().to_msg()
         pose_array_msg.header.frame_id = frame_id
 
-
         for idx, (pose, kpt, tracked_id) in enumerate(zip(poses, kpts, tracked_ids)):
-            pose_msg = PoseCandidate()
+
+            # Initialize individual msgs
+            image_detection_msg = Candidate()
+            pose_msg = Pose()
 
             # Bounding Box Tracking ID
-            pose_msg.id = int(tracked_id.item())
+            image_detection_msg.id = int(tracked_id.item())
 
             # Target image position\
             # The indices 0 to 5 include all the keypoints belonging to the head, nose, ears, etc.
             # The one with the largest confidence is selected
             best_body_part_idx = np.argmax(kpt[0:5, 2].cpu().numpy())
 
-            pose_msg.u = int(kpt[best_body_part_idx, 0].item())
-            pose_msg.v = int(kpt[best_body_part_idx, 1].item())
-            pose_msg.conf = kpt[best_body_part_idx, 2].item()
+            image_detection_msg.u = int(kpt[best_body_part_idx, 0].item())
+            image_detection_msg.v = int(kpt[best_body_part_idx, 1].item())
+            image_detection_msg.conf = kpt[best_body_part_idx, 2].item()
+            image_detection_msg.dist = np.linalg.norm(pose)
 
             # Set the rotation using the composed quaternion
-            pose_msg.pose.position.x = pose[0]
-            pose_msg.pose.position.y = pose[1]
-            pose_msg.pose.position.z = 0.
+            pose_msg.position.x = pose[0]
+            pose_msg.position.y = pose[1]
+            pose_msg.position.z = pose[2]
             # Set the rotation using the composed quaternion
-            pose_msg.pose.orientation.x = 0.
-            pose_msg.pose.orientation.y = 0.
-            pose_msg.pose.orientation.z = 0.
-            pose_msg.pose.orientation.w = 1.
-            # Create the pose Array
+            pose_msg.orientation.x = 0.
+            pose_msg.orientation.y = 0.
+            pose_msg.orientation.z = 0.
+            pose_msg.orientation.w = 1.
+
+            # Append to the Corresponding Array msgs
+            image_detection_array_msg.candidates.append(image_detection_msg)
             pose_array_msg.poses.append(pose_msg)
 
-        self.publisher_human_pose.publish(pose_array_msg)
-
-    def convert_to_frame(self, poses, from_frame = 'source_frame', to_frame = 'base_link'):
-        
-        # Delete rows that contain -100 values in the columns (invalid pose)
-        rows_to_delete = np.all(poses == -100, axis=1)
-        poses = poses[~rows_to_delete]
-
-        if len(poses) == 0:
-            return None
-
-        transform = self.tf_buffer.lookup_transform(to_frame, from_frame, rclpy.time.Time())
-
-        # Extract translation and rotation
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-
-        # Convert quaternion to rotation matrix
-        quaternion = [rotation.x, rotation.y, rotation.z, rotation.w]
-        rotation_matrix = R.from_quat(quaternion).as_matrix()
-
-        # Apply the rotation first
-        poses_rotated = rotation_matrix.dot(poses.T)
-
-        # Apply the translation (summation)
-        poses_transformed = poses_rotated + np.array([[translation.x], [translation.y], [translation.z]])
-
-        return poses_transformed.T.tolist()
+        return image_detection_array_msg, pose_array_msg
     
     def broadcast_human_pose(self, pose, orientation):
         # Broadcast the transform
@@ -337,5 +323,5 @@ class HumanPoseEstimationNode(Node):
         transform.transform.rotation.x = orientation[0]
         transform.transform.rotation.y = orientation[1]
         transform.transform.rotation.z = orientation[2]
-        transform.transform.rotation.w = orientation[3]    
+        transform.transform.rotation.w = orientation[3]
         self.tf_broadcaster.sendTransform(transform)
