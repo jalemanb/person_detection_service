@@ -114,7 +114,6 @@ class SOD:
         self.closest_person_id = None
         self.reid_lock = threading.Lock()
         self.target_feats = None
-        self.start = True
         ############################
 
         # ONLINE training ############################
@@ -125,6 +124,8 @@ class SOD:
         self.class_prediction_thr = 0.6
         self.reid_stream = torch.cuda.Stream()        
         self.yolo_stream = torch.cuda.Stream()        
+        self.extract_feats_target = True
+        self.distractors = []
 
         ##############################################
 
@@ -297,6 +298,70 @@ class SOD:
                 conf = detection_thr,
                 verbose = False,
             )
+        
+    def grab_single_sample(self, target_id_idx, tracked_ids):
+
+        use_pseudo = False
+
+        idx_to_extract = None
+
+        number_of_tracks = len(tracked_ids)
+
+        if number_of_tracks == 1: 
+            self.extract_feats_target = True
+
+        if self.extract_feats_target:
+            # Extract Only Features of target
+            label = torch.ones(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
+            # This flag is temporal until the memory manager is built
+            use_pseudo = True
+            idx_to_extract = target_id_idx
+
+            # If there are more bounding boxes then lets extract features from the distractors
+            if number_of_tracks > 1: 
+                # This one is used to toggle between selecting a distractor sample
+                # and selecting the real target ID
+                self.extract_feats_target = False
+
+        else:
+            # This code section is to grab a nonn repeating distractor sample, one by one to avoid memory overhead
+            ######################################################################################################
+            self.distractors = [d for d in self.distractors if d in tracked_ids]
+
+            distractor_id_ = None
+
+            for id_ in tracked_ids:
+                if id_ not in self.distractors and id_ != self.target_id:
+                    self.distractors.append(id_)
+                    distractor_id_ = id_
+                    break
+            
+            ######################################################################################################
+            ######################################################################################################
+
+            if distractor_id_ is None: # In this case it has already been through allt he distractor images go an provide a positive sample
+                self.distractors = []
+                label = torch.ones(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
+                # This flag is temporal until the memory manager is built
+                use_pseudo = True
+                idx_to_extract = target_id_idx
+                self.extract_feats_target = False
+            else:  # In this case there are still distractor bounding boxes that can be used as negative class samples           
+                # Getting one of the distractor bounding boxes
+                idx_to_extract = np.where(tracked_ids == distractor_id_)[0]
+                # Extract only features of one distractor at a time
+                label = torch.zeros(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
+
+                # This one is used to toggle between selecting a distractor sample
+                # and selecting the real target ID
+                self.extract_feats_target = True
+
+        text = "TARGET" if use_pseudo else f"DISTRACTOR id: {distractor_id_}" 
+
+        print("EXTRACTING FEATURES FROM: ", text)
+
+        return idx_to_extract, label, use_pseudo
+
 
     def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
@@ -304,23 +369,34 @@ class SOD:
         try:
             with torch.cuda.stream(self.reid_stream):
 
-                feats = self.feature_extraction(detections_imgs, detection_kpts)
+                # Get the index belonging to the target id
+                target_id_idx = np.where(tracked_ids == self.target_id)[0]
 
-                # Classification - Online Learning
-                self.transformer_classifier.train()
+                # From who to extract features?
+                # This approach constraints the feature extraction to be of Batch one, avoiding memory overflow or high computation code
+                # Extract features from 5 people in the image? 5 continuous frames needed
+                idx_to_extract, label, use_pseudo = self.grab_single_sample(target_id_idx, tracked_ids)
+
+                feats = self.feature_extraction(detections_imgs[[idx_to_extract]], detection_kpts[[idx_to_extract]])
+
+
                 # Propagate Visibility to Part Features
                 visible_features = feats[0]*feats[1].unsqueeze(-1)
 
                 # Creating Labels for online training
+                
+                #############################################################
+                # In this Area Save the latest features in the memory manager
+                #############################################################
 
-                print("NUMBER OF DETECTIONS:", visible_features.shape[0])
+                #############################################################
+                # In this ara get a pair of positive and negative features 
+                # By its given policy  
+                #############################################################
 
-                if visible_features.shape[0] > 1:
-                    target_id_idx = np.where(tracked_ids == self.target_id)[0]
-                    label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
-                    label[target_id_idx, :] = 1
-                    self.start = False
-                else:
+                # print("NUMBER OF DETECTIONS:", visible_features.shape[0])
+
+                if use_pseudo:
                     pseudo_negatives = torch.randn(1, 6, 512).to(self.device) # generate pseudonegative samples from a gaussian
                     pseudo_negatives = pseudo_negatives / pseudo_negatives.norm(dim=2, keepdim=True)
                     visible_features = torch.cat([pseudo_negatives, visible_features], dim=0)  # shape [2, 6, 512]
@@ -328,27 +404,38 @@ class SOD:
                     label[1, :] = 1
 
 
-                logits = self.transformer_classifier(visible_features)
-
                 # print("TRACKS", tracked_ids)
                 # print("LOGITS:", logits.shape, logits.T)
                 # print("LABELS", label.shape, label.T)
-                
+
+                ########################################################################
+                # This part is about Retraining 
+                # No Changes in this area for now
+                # Probably fix the o find a better way to select a threshold
+                ########################################################################
+
+                #############################################################################################################
+                # Online Continual Learning #################################################################################
+
+                self.transformer_classifier.train()
+
+                logits = self.transformer_classifier(visible_features)
+
                 print("Prediction_thr:", self.class_prediction_thr)
                 print("Probs:", torch.sigmoid(logits).detach().cpu().numpy().T)
-
-                best_prediction = torch.sigmoid(logits)[label.bool()].item()
-                alpha = 0.2
-
-                if best_prediction >= self.class_prediction_thr:
-                    self.class_prediction_thr = alpha*self.class_prediction_thr + (1 - alpha)*best_prediction
-
+                
+                if use_pseudo:
+                    best_prediction = torch.sigmoid(logits)[label.bool()].item()
+                    alpha = 0.2
+                    if best_prediction >= self.class_prediction_thr:
+                        self.class_prediction_thr = alpha*self.class_prediction_thr + (1 - alpha)*best_prediction
 
                 loss = self.classifier_criterion(logits, label)
-
                 self.classifier_optimizer.zero_grad()
                 loss.backward()
                 self.classifier_optimizer.step()  
+                # Online Continual Learning #################################################################################
+                #############################################################################################################
 
             self.reid_stream.synchronize()
 
@@ -357,29 +444,35 @@ class SOD:
 
     def reidentification(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
-
             return  # Skip if already running
 
         try:
 
             with torch.cuda.stream(self.reid_stream):
+                # This is the reidentification procedure
 
-                # Here is the reidentification procedure
-                f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
+                with torch.inference_mode():
 
-                visible_features = f_*v_.unsqueeze(-1)
+                    # Consider trying to reid one at a time
 
-                self.transformer_classifier.eval()
+                    self.transformer_classifier.eval()
 
-                logits = self.transformer_classifier(visible_features)
+                    f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
 
-                result = torch.sigmoid(logits).detach().cpu().numpy()
+                    visible_features = f_*v_.unsqueeze(-1)
 
-                class_idx = np.argmax(result[:, 0])
+                    logits = self.transformer_classifier(visible_features)
 
-                if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
+                    result = torch.sigmoid(logits).detach().cpu().numpy()
 
-                    self.target_id = tracked_ids[class_idx]
+                    class_idx = np.argmax(result[:, 0])
+
+                    print("THR:", self.class_prediction_thr)
+                    print("BEST:", result[class_idx, 0])
+
+                    if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
+
+                        self.target_id = tracked_ids[class_idx]
 
             self.reid_stream.synchronize()
 
@@ -397,7 +490,6 @@ class SOD:
         
         return (fg_, vg_)
     
-
     def get_person_pose(self, bbox, kpts, depth_img, win_size=1):
         """
         Estimate 3D pose from keypoints and depth image using the mode of the depth

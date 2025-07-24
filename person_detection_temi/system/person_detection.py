@@ -191,7 +191,7 @@ class HumanPoseEstimationNode(Node):
         end_time = time.time()
         execution_time = (end_time - start_time) * 1000
             
-        self.get_logger().info(f"Model Inference Time: {execution_time} ms")
+        # self.get_logger().info(f"Model Inference Time: {execution_time} ms")
 
         person_poses = []
         bbox = []
@@ -203,9 +203,6 @@ class HumanPoseEstimationNode(Node):
 
             person_poses, bbox, _, tracked_ids, kpts = results
             target_id = self.model.target_id
-
-            print("PERSON POSES")
-            print(person_poses)
 
             if person_poses is not None:
 

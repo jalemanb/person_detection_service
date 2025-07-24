@@ -170,7 +170,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         if save_time:
             times.append(execution_time_s)
             
-        print(f"Execution Time: {execution_time_s:.3f} s")
+        # print(f"Execution Time: {execution_time_s:.3f} s")
 
         if results is not None:
 
@@ -190,7 +190,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
 
                 idx = np.where(tracked_ids == model.target_id)[0][0]
 
-                print("idx", idx, tracked_ids[idx])
+                # print("idx", idx, tracked_ids[idx])
 
                 if save_boxes:
                     bboxes.append(bbox[idx].tolist())
@@ -232,7 +232,7 @@ def main():
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
-    datasets = ["sidewalk"]
+    datasets = ["lab_corridor"]
     # datasets = ["room"]
 
     for dataset in datasets:
