@@ -171,8 +171,8 @@ class KPR(object):
 
         v_ = compute_visibility_torch(kpts, 0.2)
 
-        # f_, v_, _, _ = features
-        f_, _, _, _ = features
+        f_, v_, _, _ = features
+        # f_, _, _, _ = features
 
         # if self.cfg.test.normalize_feature:
         #     f_ = self.normalize(f_)

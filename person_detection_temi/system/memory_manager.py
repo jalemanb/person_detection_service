@@ -94,7 +94,6 @@ class MemoryManager:
         feats = feats_vis[0].detach().cpu()
         vis = feats_vis[1].detach().cpu()
         self.n_pos = self._insert(feats, vis, self.pos_feats, self.pos_vis, self.pos_counts, self.n_pos)
-
         print("POS N", self.n_pos)
 
     def insert_negative(self, feats_vis): # UNDERSTOOD
@@ -120,34 +119,57 @@ class MemoryManager:
 
         # Get positive sample
         pos_idx = self._get_unique_index(self.n_pos, self._pos_sampled)
-        pos_feat = self.pos_feats[pos_idx].unsqueeze(0)
+        # pos_noise, _ = self.generate_pseudo_negative()
+        pos_feat = self.pos_feats[pos_idx].unsqueeze(0) #+ pos_noise
         pos_vis = self.pos_vis[pos_idx].unsqueeze(0)
 
+
         # Get negative sample (real or pseudo)
-        if self.n_neg > 0: # and (not use_pseudo or random.random() > 0.5):
+        if self.n_neg > 0 and (not use_pseudo or random.random() > 0.2):
             print("REAL NEG")
+
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
-            neg_feat = self.neg_feats[neg_idx].unsqueeze(0)
-            neg_vis = self.neg_vis[neg_idx].unsqueeze(0)
+            # neg_noise, _ = self.generate_pseudo_negative()
+            neg_feat = self.neg_feats[neg_idx].unsqueeze(0) #+ neg_noise
+            neg_vis = self.neg_vis[neg_idx].unsqueeze(0) 
         else:
             print("PSEUDO NEG")
             # Get a Pseudo negative 
-            neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
-            neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
-            neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
-            # neg_feat, neg_vis = self.generate_pseudo_negative()
+            # neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
+            # neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
+            # neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
+            neg_feat, neg_vis = self.generate_pseudo_negative()
 
         # Stack and create labels
-        feats = torch.cat([neg_feat, pos_feat], dim=0)  # [2, 6, 512]
-        vis = torch.cat([neg_vis, pos_vis], dim=0)      # [2, 6]
+        feats = torch.cat([neg_feat, pos_feat], dim=0)          # [2, 6, 512]
+        vis = torch.cat([neg_vis, pos_vis], dim=0)              # [2, 6]
         labels = torch.tensor([[0], [1]], dtype=torch.float32)  # [2, 1]
 
-        # Randomly drop a part for both pos and neg
-        # This should help the model to learn to identify
-        # the most useful part
-        # drop_idx = random.randint(0, self.num_parts - 1)
-        # vis[0, drop_idx] = False
-        # vis[1, drop_idx] = False
+        # random_index_0 = torch.randint(0, 6, (1,)).item()
+        # random_index_1 = torch.randint(0, 6, (1,)).item()
+
+        # vis[0, random_index_0] = False
+        # vis[1, random_index_1] = False
+
+        # Normalize features along the feature dimension
+        neg_feat_norm = F.normalize(neg_feat, p=2, dim=-1)  # [1, 6, 512]
+        pos_feat_norm = F.normalize(pos_feat, p=2, dim=-1)  # [1, 6, 512]
+
+        # Multiply visibility masks to zero-out invisible parts
+        vis_mask = (neg_vis & pos_vis).unsqueeze(-1).float()  # [1, 6, 1]
+
+        # Compute cosine similarity for each part
+        cos_sim = (neg_feat_norm * pos_feat_norm).sum(dim=-1)  # [1, 6]
+
+        # Mask out the invisible parts
+        masked_cos_sim = cos_sim * vis_mask.squeeze(-1)  # [1, 6]
+
+        # Compute average over visible parts
+        visible_counts = vis_mask.sum()
+        avg_cos_sim = masked_cos_sim.sum() / visible_counts.clamp(min=1.0)
+
+        print(f"Average Cosine Similarity (visible parts only): {avg_cos_sim.item():.4f}")
+
 
         return feats, vis, labels
 

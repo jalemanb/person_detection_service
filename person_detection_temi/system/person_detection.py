@@ -75,8 +75,8 @@ class HumanPoseEstimationNode(Node):
                 break
 
         yolo_path = os.path.join(pkg_shared_dir, 'models', yolo_model)
-        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
-        feature_extracture_model_path = os.path.join(pkg_shared_dir, 'models', 'kpr_reid_in_shape_inferred.onnx')
+        # feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
+        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_solider.yaml')
 
         bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
 
@@ -240,6 +240,8 @@ class HumanPoseEstimationNode(Node):
                 
                 # Invalid detections go red
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
+
+                print("TARGET ID:", target_id)
 
                 # overlay the Target person, this is to be considered later on
                 if target_id is not None and tracked_ids[i] == target_id:

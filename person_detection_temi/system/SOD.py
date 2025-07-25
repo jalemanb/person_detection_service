@@ -2,7 +2,7 @@ import logging
 
 from ultralytics import YOLO
 import torch.nn.functional as F
-from torch.optim import Adam, AdamW
+from torch.optim import Adam, AdamW, SGD
 import torch.nn as nn
 import torch
 import cv2
@@ -14,6 +14,8 @@ from person_detection_temi.system.kpr_reid import KPR as KPR_torch
 from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
 from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
 from person_detection_temi.system.memory_manager import MemoryManager
+from lion_pytorch import Lion
+from torchvision.ops import sigmoid_focal_loss
 
 def get_sinusoid_encoding(n_position, d_hid):
     """Sinusoidal positional encoding: shape (1, n_position, d_hid)"""
@@ -27,7 +29,7 @@ def get_sinusoid_encoding(n_position, d_hid):
 
 # ---- Model ----
 class TinyTransformer(nn.Module):
-    def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout = 0.3):
+    def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout = 0.0):
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
@@ -39,7 +41,7 @@ class TinyTransformer(nn.Module):
         self.register_buffer("pos_embed", get_sinusoid_encoding(seq_len + 1, d_model))  # [1, 7, 512]
 
         # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, dropout=dropout)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         self.dropout = dropout
@@ -48,11 +50,11 @@ class TinyTransformer(nn.Module):
         self.mlp_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(),
-            # nn.Dropout(self.dropout),
+            nn.Dropout(self.dropout),
             nn.Linear(d_model, num_classes)
         )
 
-    def forward(self, x):  # x: (B, 6, 512)
+    def forward(self, x, attention_mask=None):  # x: (B, 6, 512)
         B = x.size(0)
 
         # Prepend CLS token
@@ -62,8 +64,19 @@ class TinyTransformer(nn.Module):
         # Add positional embeddings
         x = x + self.pos_embed[:, :x.size(1), :]
 
+        # If attention_mask is provided, adjust it
+        if attention_mask is not None:
+            # attention_mask is visibility: shape (B, 6), dtype=bool, True=visible
+            # CLS token is always visible
+            cls_mask = torch.ones((B, 1), dtype=torch.bool, device=attention_mask.device)
+            extended_mask = torch.cat([cls_mask, attention_mask], dim=1)  # (B, 7)
+            # Transformer expects True for *masked* tokens
+            key_padding_mask = ~extended_mask  # (B, 7)
+        else:
+            key_padding_mask = None
+
         # Transformer
-        x = self.transformer(x)  # (B, 7, 512)
+        x = self.transformer(x, src_key_padding_mask = key_padding_mask)  # (B, 7, 512)
         cls_output = x[:, 0]     # Take CLS token output
 
         return self.mlp_head(cls_output)  # (B, num_classes), (B, 512)
@@ -115,25 +128,42 @@ class SOD:
         self.closest_person_id = None
         self.reid_lock = threading.Lock()
         self.target_feats = None
+        self.reid_counter = 0
+        self.reid_count_thr = 3
         ############################
 
         # ONLINE training ############################
         self.transformer_classifier = TinyTransformer()
         self.transformer_classifier.to(self.device)
-        self.classifier_optimizer = Adam(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-4)
-        self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([5.0]).to(self.device))
-        self.class_prediction_thr = 0.6
+        self.classifier_optimizer = AdamW(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-5)
+        # self.classifier_optimizer = SGD(self.transformer_classifier.parameters(), lr=1e-2, weight_decay=1e-5)
+
+        # self.classifier_optimizer = Lion(
+        #     self.transformer_classifier.parameters(),
+        #     lr=1e-4,
+        #     weight_decay=1e-5
+        # )
+        self.classifier_criterion = nn.BCEWithLogitsLoss()
+        # self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([5.0]).to(self.device))
+        # self.classifier_criterion = nn.CrossEntropyLoss()
+        # self.classifier_criterion = lambda logits, targets: sigmoid_focal_loss(
+        #     inputs=logits,
+        #     targets=targets,
+        #     alpha=0.8,   # equivalent to weighting positives more heavily
+        #     gamma=2.0,
+        #     reduction='mean'
+        # )
+        self.class_prediction_thr = 0.8
         self.reid_stream = torch.cuda.Stream()        
         self.yolo_stream = torch.cuda.Stream()        
         self.extract_feats_target = True
         self.distractors = []
         self.memory = MemoryManager(max_samples=100, 
-                                    alpha=0.75, 
-                                    sim_thresh=0.5, 
+                                    alpha=0.5, 
+                                    sim_thresh=0.75, # If Small aways preserve the newest features
                                     feature_dim=512, 
                                     num_parts=6,
                                     pseudo_std = 0.001)
-
         ##############################################
 
         # Intel Realsense Values
@@ -150,12 +180,12 @@ class SOD:
 
     def set_target_id(self):
         self.target_id = self.closest_person_id
-        self.class_prediction_thr = 0.6
+        self.class_prediction_thr = 0.8
 
     def unset_target_id(self):
         # Set the target ID to none to avoid Re-identifying when Unnecesary
         self.target_id = None
-        self.class_prediction_thr = 0.6
+        self.class_prediction_thr = 0.8
 
         # Reset all the reidentifying mechanism weights to train from scratch whn apropiate
         for layer in self.transformer_classifier.modules():
@@ -361,8 +391,6 @@ class SOD:
         
     def grab_single_sample(self, target_id_idx, tracked_ids):
 
-        is_positive = self.extract_feats_target
-
         idx_to_extract = None
 
         distractor_id_ = None
@@ -388,7 +416,6 @@ class SOD:
             ######################################################################################################
             self.distractors = [d for d in self.distractors if d in tracked_ids]
 
-
             for id_ in tracked_ids:
                 if id_ not in self.distractors and id_ != self.target_id:
                     self.distractors.append(id_)
@@ -401,7 +428,6 @@ class SOD:
             if distractor_id_ is None: # In this case it has already been through allt he distractor images go an provide a positive sample
                 self.distractors = []
                 label = torch.ones(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
-                # This flag is temporal until the memory manager is built
                 idx_to_extract = target_id_idx
                 self.extract_feats_target = False
             else:  # In this case there are still distractor bounding boxes that can be used as negative class samples           
@@ -411,6 +437,8 @@ class SOD:
                 # This one is used to toggle between selecting a distractor sample
                 # and selecting the real target ID
                 self.extract_feats_target = True
+
+        is_positive = idx_to_extract == target_id_idx
 
         text = "TARGET" if is_positive else f"DISTRACTOR id: {distractor_id_}" 
 
@@ -433,7 +461,12 @@ class SOD:
                 # Extract features from 5 people in the image? 5 continuous frames needed
                 idx_to_extract, is_positive = self.grab_single_sample(target_id_idx, tracked_ids)
 
+                # Extract the features of the chosen index
                 feats = self.feature_extraction(detections_imgs[[idx_to_extract]], detection_kpts[[idx_to_extract]])
+                print("VISIBILITIES")
+                print(feats[1])
+
+                print("WOW", target_id_idx == idx_to_extract, is_positive)
 
                 # Save Latest Extracted feature into memory
                 if is_positive:
@@ -444,11 +477,9 @@ class SOD:
                 # Get a sample based on the memory manager policy
                 mem_feats, mem_vis, label = self.memory.get_sample()
 
-                # Propagate Visibility to Part Features
-                visible_features = mem_feats*mem_vis.unsqueeze(-1)
-
                 # Move everything into device
-                visible_features = visible_features.to(self.device)
+                mem_feats = mem_feats.to(self.device)
+                mem_vis = mem_vis.to(self.device)
                 label = label.to(self.device)
 
                 # print("TRACKS", tracked_ids)
@@ -466,20 +497,20 @@ class SOD:
 
                 self.transformer_classifier.train()
 
-                logits = self.transformer_classifier(visible_features)
+                logits = self.transformer_classifier(mem_feats, mem_vis)
 
                 print("Prediction_thr:", self.class_prediction_thr)
                 print("Probs:", torch.sigmoid(logits).detach().cpu().numpy().T)
                 
                 best_prediction = torch.sigmoid(logits)[label.bool()].item()
-                alpha = 0.75
+                # alpha = 0.5
                 # if best_prediction >= self.class_prediction_thr:
                 #     self.class_prediction_thr = np.clip(alpha*self.class_prediction_thr + (1 - alpha)*best_prediction, a_min=0.4, a_max=0.8)
 
-                loss = self.classifier_criterion(logits, label)
+                loss = self.classifier_criterion(logits.flatten(), label.flatten())
                 self.classifier_optimizer.zero_grad()
                 loss.backward()
-                # torch.nn.utils.clip_grad_norm_(self.transformer_classifier.parameters(), max_norm=0.1)
+                torch.nn.utils.clip_grad_norm_(self.transformer_classifier.parameters(), max_norm=0.5)
                 self.classifier_optimizer.step()  
                 # Online Continual Learning #################################################################################
                 #############################################################################################################
@@ -506,9 +537,7 @@ class SOD:
 
                     f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
 
-                    visible_features = f_*v_.unsqueeze(-1)
-
-                    logits = self.transformer_classifier(visible_features)
+                    logits = self.transformer_classifier(f_, v_)
 
                     result = torch.sigmoid(logits).detach().cpu().numpy()
 
@@ -519,8 +548,16 @@ class SOD:
 
                     if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
 
-                        self.target_id = tracked_ids[class_idx]
+                        self.reid_counter += 1
 
+                        if self.reid_counter > self.reid_count_thr:
+
+                            self.target_id = tracked_ids[class_idx]
+                            self.reid_counter = 0
+
+                    else:
+                        self.reid_counter = 0
+   
             self.reid_stream.synchronize()
 
         finally:
@@ -532,8 +569,7 @@ class SOD:
         fg_, vg_ = self.kpr_reid.extract(
                     detections_imgs, 
                     detection_kpts, 
-                    return_heatmaps=False
-                )
+                    return_heatmaps=False)
         
         return (fg_, vg_)
     
