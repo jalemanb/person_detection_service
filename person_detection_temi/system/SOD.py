@@ -2,7 +2,7 @@ import logging
 
 from ultralytics import YOLO
 import torch.nn.functional as F
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 import torch.nn as nn
 import torch
 import cv2
@@ -13,6 +13,7 @@ import threading
 from person_detection_temi.system.kpr_reid import KPR as KPR_torch
 from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
 from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
+from person_detection_temi.system.memory_manager import MemoryManager
 
 def get_sinusoid_encoding(n_position, d_hid):
     """Sinusoidal positional encoding: shape (1, n_position, d_hid)"""
@@ -120,12 +121,18 @@ class SOD:
         self.transformer_classifier = TinyTransformer()
         self.transformer_classifier.to(self.device)
         self.classifier_optimizer = Adam(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-4)
-        self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([3.0]).to(self.device))
+        self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([5.0]).to(self.device))
         self.class_prediction_thr = 0.6
         self.reid_stream = torch.cuda.Stream()        
         self.yolo_stream = torch.cuda.Stream()        
         self.extract_feats_target = True
         self.distractors = []
+        self.memory = MemoryManager(max_samples=100, 
+                                    alpha=0.75, 
+                                    sim_thresh=0.5, 
+                                    feature_dim=512, 
+                                    num_parts=6,
+                                    pseudo_std = 0.001)
 
         ##############################################
 
@@ -154,6 +161,51 @@ class SOD:
         for layer in self.transformer_classifier.modules():
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
+
+
+    def compute_iou_with_flag_numpy(self, bboxes, ref_box):
+        """
+        Compute IoU of a reference box against all other boxes in a NumPy array.
+
+        Args:
+            bboxes (np.ndarray): shape [N, 4] with [x1, y1, x2, y2]
+            ref_box (np.ndarray): shape [1, 4], extracted as bboxes[[idx]]
+
+        Returns:
+            ious (np.ndarray): IoU values, shape [N-1]
+            has_intersection (bool): True if any IoU > 0
+        """
+        assert ref_box.shape == (1, 4), f"Expected ref_box shape [1, 4], got {ref_box.shape}"
+
+        # Convert [1, 4] → [4]
+        ref_box = ref_box[0]  # Now shape [4]
+
+        # Mask out the reference box
+        other_boxes = bboxes[~np.all(bboxes == ref_box, axis=1)]  # [N-1, 4]
+
+        # Intersection coordinates
+        x1 = np.maximum(ref_box[0], other_boxes[:, 0])
+        y1 = np.maximum(ref_box[1], other_boxes[:, 1])
+        x2 = np.minimum(ref_box[2], other_boxes[:, 2])
+        y2 = np.minimum(ref_box[3], other_boxes[:, 3])
+
+        # Compute intersection area
+        inter_w = np.clip(x2 - x1, a_min=0, a_max=None)
+        inter_h = np.clip(y2 - y1, a_min=0, a_max=None)
+        inter_area = inter_w * inter_h
+
+        # Areas
+        ref_area = (ref_box[2] - ref_box[0]) * (ref_box[3] - ref_box[1])
+        other_areas = (other_boxes[:, 2] - other_boxes[:, 0]) * (other_boxes[:, 3] - other_boxes[:, 1])
+
+        # Union and IoU
+        union_area = ref_area + other_areas - inter_area
+        ious = inter_area / np.clip(union_area, a_min=1e-6, a_max=None)
+
+        has_intersection = np.any(ious > 0.0)
+
+        return ious, has_intersection
+
 
     def detect(
             self, 
@@ -195,6 +247,14 @@ class SOD:
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, poses, track_ids, original_kpts = detections
 
+            # Deactivate learning when intersection between bounding boxes to 
+            # Have god qualit samples
+            iou_intersect = False
+            # if self.target_id in track_ids:
+            #     if bboxes.shape[0] > 1:
+            #         target_id_idx = np.where(track_ids == self.target_id)[0]
+            #         _, iou_intersect = self.compute_iou_with_flag_numpy(bboxes, bboxes[target_id_idx])
+
             # If no detection (No human) then stay on reid mode and return Nothing
             if self.target_id is not None and self.target_id not in track_ids:
                 threading.Thread(
@@ -202,7 +262,7 @@ class SOD:
                         args=(detections_imgs, detection_kpts, track_ids),
                         daemon=True
                     ).start()
-            elif self.target_id is not None and self.target_id in track_ids:
+            elif self.target_id is not None and self.target_id in track_ids and not iou_intersect:
                 # Collect samples for online training the feature extractor in another train
                 threading.Thread(
                         target=self.updating_reid,
@@ -301,9 +361,11 @@ class SOD:
         
     def grab_single_sample(self, target_id_idx, tracked_ids):
 
-        use_pseudo = False
+        is_positive = self.extract_feats_target
 
         idx_to_extract = None
+
+        distractor_id_ = None
 
         number_of_tracks = len(tracked_ids)
 
@@ -312,9 +374,7 @@ class SOD:
 
         if self.extract_feats_target:
             # Extract Only Features of target
-            label = torch.ones(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
             # This flag is temporal until the memory manager is built
-            use_pseudo = True
             idx_to_extract = target_id_idx
 
             # If there are more bounding boxes then lets extract features from the distractors
@@ -328,7 +388,6 @@ class SOD:
             ######################################################################################################
             self.distractors = [d for d in self.distractors if d in tracked_ids]
 
-            distractor_id_ = None
 
             for id_ in tracked_ids:
                 if id_ not in self.distractors and id_ != self.target_id:
@@ -343,24 +402,21 @@ class SOD:
                 self.distractors = []
                 label = torch.ones(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
                 # This flag is temporal until the memory manager is built
-                use_pseudo = True
                 idx_to_extract = target_id_idx
                 self.extract_feats_target = False
             else:  # In this case there are still distractor bounding boxes that can be used as negative class samples           
                 # Getting one of the distractor bounding boxes
                 idx_to_extract = np.where(tracked_ids == distractor_id_)[0]
-                # Extract only features of one distractor at a time
-                label = torch.zeros(1, 1).to(self.device).reshape(1, -1)  # shape [B, 1], all positive class
 
                 # This one is used to toggle between selecting a distractor sample
                 # and selecting the real target ID
                 self.extract_feats_target = True
 
-        text = "TARGET" if use_pseudo else f"DISTRACTOR id: {distractor_id_}" 
+        text = "TARGET" if is_positive else f"DISTRACTOR id: {distractor_id_}" 
 
         print("EXTRACTING FEATURES FROM: ", text)
 
-        return idx_to_extract, label, use_pseudo
+        return idx_to_extract, is_positive
 
 
     def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
@@ -375,34 +431,25 @@ class SOD:
                 # From who to extract features?
                 # This approach constraints the feature extraction to be of Batch one, avoiding memory overflow or high computation code
                 # Extract features from 5 people in the image? 5 continuous frames needed
-                idx_to_extract, label, use_pseudo = self.grab_single_sample(target_id_idx, tracked_ids)
+                idx_to_extract, is_positive = self.grab_single_sample(target_id_idx, tracked_ids)
 
                 feats = self.feature_extraction(detections_imgs[[idx_to_extract]], detection_kpts[[idx_to_extract]])
 
+                # Save Latest Extracted feature into memory
+                if is_positive:
+                    self.memory.insert_positive(feats)
+                else:
+                    self.memory.insert_negative(feats)
+
+                # Get a sample based on the memory manager policy
+                mem_feats, mem_vis, label = self.memory.get_sample()
 
                 # Propagate Visibility to Part Features
-                visible_features = feats[0]*feats[1].unsqueeze(-1)
+                visible_features = mem_feats*mem_vis.unsqueeze(-1)
 
-                # Creating Labels for online training
-                
-                #############################################################
-                # In this Area Save the latest features in the memory manager
-                #############################################################
-
-                #############################################################
-                # In this ara get a pair of positive and negative features 
-                # By its given policy  
-                #############################################################
-
-                # print("NUMBER OF DETECTIONS:", visible_features.shape[0])
-
-                if use_pseudo:
-                    pseudo_negatives = torch.randn(1, 6, 512).to(self.device) # generate pseudonegative samples from a gaussian
-                    pseudo_negatives = pseudo_negatives / pseudo_negatives.norm(dim=2, keepdim=True)
-                    visible_features = torch.cat([pseudo_negatives, visible_features], dim=0)  # shape [2, 6, 512]
-                    label = torch.zeros(visible_features.shape[0], 1).to(self.device)  # shape [B, 1], all positive class
-                    label[1, :] = 1
-
+                # Move everything into device
+                visible_features = visible_features.to(self.device)
+                label = label.to(self.device)
 
                 # print("TRACKS", tracked_ids)
                 # print("LOGITS:", logits.shape, logits.T)
@@ -424,15 +471,15 @@ class SOD:
                 print("Prediction_thr:", self.class_prediction_thr)
                 print("Probs:", torch.sigmoid(logits).detach().cpu().numpy().T)
                 
-                if use_pseudo:
-                    best_prediction = torch.sigmoid(logits)[label.bool()].item()
-                    alpha = 0.2
-                    if best_prediction >= self.class_prediction_thr:
-                        self.class_prediction_thr = alpha*self.class_prediction_thr + (1 - alpha)*best_prediction
+                best_prediction = torch.sigmoid(logits)[label.bool()].item()
+                alpha = 0.75
+                # if best_prediction >= self.class_prediction_thr:
+                #     self.class_prediction_thr = np.clip(alpha*self.class_prediction_thr + (1 - alpha)*best_prediction, a_min=0.4, a_max=0.8)
 
                 loss = self.classifier_criterion(logits, label)
                 self.classifier_optimizer.zero_grad()
                 loss.backward()
+                # torch.nn.utils.clip_grad_norm_(self.transformer_classifier.parameters(), max_norm=0.1)
                 self.classifier_optimizer.step()  
                 # Online Continual Learning #################################################################################
                 #############################################################################################################

@@ -232,7 +232,7 @@ def main():
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
-    datasets = ["lab_corridor"]
+    datasets = ["corridor1"]
     # datasets = ["room"]
 
     for dataset in datasets:

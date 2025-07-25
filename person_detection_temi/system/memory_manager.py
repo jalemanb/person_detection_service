@@ -47,7 +47,7 @@ class MemoryManager:
 
     # This function ensures diversity in sampling by returning a unique index each time — i.e., no repetitions 
     # until all possible indices are used once. Once every index has been sampled, it resets and starts over.
-    def _get_unique_index(self, total, sampled_set): 
+    def _get_unique_index(self, total, sampled_set): # UNDERSTOOD
         available = list(set(range(total)) - sampled_set)
         if not available:
             sampled_set.clear()
@@ -67,7 +67,9 @@ class MemoryManager:
                 sims = self._avg_cos_sim(f, v, mem_f[:n_total], mem_v[:n_total])
                 max_sim, max_idx = sims.max(0)
                 if max_sim >= self.sim_thresh:
-                    mem_f[max_idx] = self.alpha * mem_f[max_idx] + (1 - self.alpha) * f
+                    mem_f[max_idx] = f #self.alpha * mem_f[max_idx] + (1 - self.alpha) * f
+                    mem_v[max_idx] = v
+
                     counts[max_idx] += 1
                     continue
 
@@ -93,25 +95,26 @@ class MemoryManager:
         vis = feats_vis[1].detach().cpu()
         self.n_pos = self._insert(feats, vis, self.pos_feats, self.pos_vis, self.pos_counts, self.n_pos)
 
+        print("POS N", self.n_pos)
+
     def insert_negative(self, feats_vis): # UNDERSTOOD
         feats = feats_vis[0].detach().cpu()
         vis = feats_vis[1].detach().cpu()
         self.n_neg = self._insert(feats, vis, self.neg_feats, self.neg_vis, self.neg_counts, self.n_neg)
+        print("NEG N", self.n_neg)
 
-    def generate_pseudo_negative(num_parts=6,   # UNDERSTOOD
-                                 feature_dim=512, 
-                                 std=0.001): 
+    def generate_pseudo_negative(self): # UNDERSTOOD
         
-        mean = torch.zeros(feature_dim)
-        cov = torch.eye(feature_dim) * (std ** 2)
+        mean = torch.zeros(self.feature_dim)
+        cov = torch.eye(self.feature_dim) * (self.pseudo_std ** 2)
         dist = MultivariateNormal(mean, covariance_matrix=cov)
 
-        samples = torch.stack([dist.sample() for _ in range(num_parts)], dim=0)  # [6, 512]
-        visibility = torch.ones(num_parts, dtype=torch.bool)                     # [6]
+        samples = torch.stack([dist.sample() for _ in range(self.num_parts)], dim=0)  # [6, 512]
+        visibility = torch.ones(self.num_parts, dtype=torch.bool)                     # [6]
 
         return samples.unsqueeze(0), visibility.unsqueeze(0)                     # [1, 6, 512]
 
-    def get_sample(self, use_pseudo=True):
+    def get_sample(self, use_pseudo=True): # UNDERSTOOD
         if self.n_pos == 0:
             return None
 
@@ -121,21 +124,30 @@ class MemoryManager:
         pos_vis = self.pos_vis[pos_idx].unsqueeze(0)
 
         # Get negative sample (real or pseudo)
-        if self.n_neg > 0 and (not use_pseudo or random.random() > self.n_neg / self.max_samples):
+        if self.n_neg > 0: # and (not use_pseudo or random.random() > 0.5):
+            print("REAL NEG")
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
             neg_feat = self.neg_feats[neg_idx].unsqueeze(0)
             neg_vis = self.neg_vis[neg_idx].unsqueeze(0)
         else:
+            print("PSEUDO NEG")
             # Get a Pseudo negative 
-            # neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
-            # neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
-            # neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
-            neg_feat, neg_vis = self._generate_pseudo_negative()
+            neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
+            neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
+            neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
+            # neg_feat, neg_vis = self.generate_pseudo_negative()
 
         # Stack and create labels
         feats = torch.cat([neg_feat, pos_feat], dim=0)  # [2, 6, 512]
         vis = torch.cat([neg_vis, pos_vis], dim=0)      # [2, 6]
         labels = torch.tensor([[0], [1]], dtype=torch.float32)  # [2, 1]
+
+        # Randomly drop a part for both pos and neg
+        # This should help the model to learn to identify
+        # the most useful part
+        # drop_idx = random.randint(0, self.num_parts - 1)
+        # vis[0, drop_idx] = False
+        # vis[1, drop_idx] = False
 
         return feats, vis, labels
 
@@ -148,8 +160,7 @@ class MemoryManager:
             neg_vis=self.neg_vis[:self.n_neg].numpy(),
             neg_counts=self.neg_counts[:self.n_neg].numpy(),
             n_pos=self.n_pos,
-            n_neg=self.n_neg
-        )
+            n_neg=self.n_neg)
 
     def load(self, path): # UNDERSTOOD
         data = np.load(path)
