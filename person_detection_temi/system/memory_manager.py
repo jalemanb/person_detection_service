@@ -36,6 +36,8 @@ class MemoryManager:
         self._pos_sampled = set()
         self._neg_sampled = set()
 
+        self.scaling_factor = torch.ones(1, 6, 1)
+
     def _avg_cos_sim(self, f, v, mem_f, mem_v): # UNDERSTOOD
         f = F.normalize(f, dim=-1)
         mem_f = F.normalize(mem_f, dim=-1)
@@ -94,13 +96,11 @@ class MemoryManager:
         feats = feats_vis[0].detach().cpu()
         vis = feats_vis[1].detach().cpu()
         self.n_pos = self._insert(feats, vis, self.pos_feats, self.pos_vis, self.pos_counts, self.n_pos)
-        print("POS N", self.n_pos)
 
     def insert_negative(self, feats_vis): # UNDERSTOOD
         feats = feats_vis[0].detach().cpu()
         vis = feats_vis[1].detach().cpu()
         self.n_neg = self._insert(feats, vis, self.neg_feats, self.neg_vis, self.neg_counts, self.n_neg)
-        print("NEG N", self.n_neg)
 
     def generate_pseudo_negative(self): # UNDERSTOOD
         
@@ -117,39 +117,39 @@ class MemoryManager:
         if self.n_pos == 0:
             return None
 
+        print("NEG N", self.n_neg)
+        print("POS N", self.n_pos)
+
         # Get positive sample
         pos_idx = self._get_unique_index(self.n_pos, self._pos_sampled)
-        # pos_noise, _ = self.generate_pseudo_negative()
-        pos_feat = self.pos_feats[pos_idx].unsqueeze(0) #+ pos_noise
+        pos_feat = self.pos_feats[pos_idx].unsqueeze(0) #+ torch.randn(1, self.num_parts, self.feature_dim)*0.001
         pos_vis = self.pos_vis[pos_idx].unsqueeze(0)
 
+        # self.scaling_factor = torch.norm(pos_feat, p=2, dim=2, keepdim=True) 
 
         # Get negative sample (real or pseudo)
-        if self.n_neg > 0 and (not use_pseudo or random.random() > 0.2):
+        if self.n_neg > 0 and (not use_pseudo or random.random() > 0.1):
             print("REAL NEG")
 
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
-            # neg_noise, _ = self.generate_pseudo_negative()
-            neg_feat = self.neg_feats[neg_idx].unsqueeze(0) #+ neg_noise
+            neg_feat = self.neg_feats[neg_idx].unsqueeze(0) #+ torch.randn(1, self.num_parts, self.feature_dim)*0.001
             neg_vis = self.neg_vis[neg_idx].unsqueeze(0) 
         else:
             print("PSEUDO NEG")
-            # Get a Pseudo negative 
+            # Get a Pseudo negative
+            neg_feat = torch.randn(1, self.num_parts, self.feature_dim)*0.001
+            neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
+
             # neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
             # neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
             # neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
-            neg_feat, neg_vis = self.generate_pseudo_negative()
+
+            # neg_feat, neg_vis = self.generate_pseudo_negative()
 
         # Stack and create labels
         feats = torch.cat([neg_feat, pos_feat], dim=0)          # [2, 6, 512]
         vis = torch.cat([neg_vis, pos_vis], dim=0)              # [2, 6]
         labels = torch.tensor([[0], [1]], dtype=torch.float32)  # [2, 1]
-
-        # random_index_0 = torch.randint(0, 6, (1,)).item()
-        # random_index_1 = torch.randint(0, 6, (1,)).item()
-
-        # vis[0, random_index_0] = False
-        # vis[1, random_index_1] = False
 
         # Normalize features along the feature dimension
         neg_feat_norm = F.normalize(neg_feat, p=2, dim=-1)  # [1, 6, 512]

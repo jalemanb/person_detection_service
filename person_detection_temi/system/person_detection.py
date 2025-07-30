@@ -75,8 +75,8 @@ class HumanPoseEstimationNode(Node):
                 break
 
         yolo_path = os.path.join(pkg_shared_dir, 'models', yolo_model)
-        # feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
-        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_solider.yaml')
+        # feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml') kpr_market_test_solider
+        feature_extracture_cfg_path = os.path.join(pkg_shared_dir, 'models', 'kpr_market_test_in.yaml')
 
         bytetrack_path = os.path.join(pkg_shared_dir, 'models', 'bytetrack.yaml')
 

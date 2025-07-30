@@ -106,22 +106,13 @@ class SOD:
             yolo_model_path
         )  # load a pretrained model (recommended for training)
 
-        if feature_extracture_model_path != "":
-            # ReID System ONNX based for Acceleration
-            self.kpr_reid = KPR_onnx(
-                feature_extracture_cfg_path, 
-                feature_extracture_model_path, 
-                kpt_conf=0., 
-                device='cuda' if torch.cuda.is_available() else 'cpu'
-            )
-        else:
-            # Based on TORCH for testing
-            # ReID System
-            self.kpr_reid = KPR_torch(
-                feature_extracture_cfg_path, 
-                kpt_conf=0., 
-                device='cuda' if torch.cuda.is_available() else 'cpu'
-            )
+        # Based on TORCH for testing
+        # ReID System
+        self.kpr_reid = KPR_torch(
+            feature_extracture_cfg_path, 
+            kpt_conf=0.3, 
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
 
         # Reidentifiation utilities
         self.target_id = None
@@ -130,21 +121,21 @@ class SOD:
         self.target_feats = None
         self.reid_counter = 0
         self.reid_count_thr = 3
+        self.blacklist = []
         ############################
 
         # ONLINE training ############################
         self.transformer_classifier = TinyTransformer()
         self.transformer_classifier.to(self.device)
         self.classifier_optimizer = AdamW(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-5)
-        # self.classifier_optimizer = SGD(self.transformer_classifier.parameters(), lr=1e-2, weight_decay=1e-5)
-
+        # self.classifier_optimizer = SGD(self.transformer_classifier.parameters(), lr=1e-5, weight_decay=1e-5)
         # self.classifier_optimizer = Lion(
         #     self.transformer_classifier.parameters(),
-        #     lr=1e-4,
+        #     lr=1e-5,
         #     weight_decay=1e-5
         # )
-        self.classifier_criterion = nn.BCEWithLogitsLoss()
-        # self.classifier_criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([5.0]).to(self.device))
+        # self.classifier_criterion = nn.BCEWithLogitsLoss()
+        self.classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([5.0]).to(self.device))
         # self.classifier_criterion = nn.CrossEntropyLoss()
         # self.classifier_criterion = lambda logits, targets: sigmoid_focal_loss(
         #     inputs=logits,
@@ -400,6 +391,9 @@ class SOD:
         if number_of_tracks == 1: 
             self.extract_feats_target = True
 
+
+        print("NUMBER oF TRACKS:", number_of_tracks)
+
         if self.extract_feats_target:
             # Extract Only Features of target
             # This flag is temporal until the memory manager is built
@@ -547,6 +541,8 @@ class SOD:
                     print("BEST:", result[class_idx, 0])
 
                     if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
+
+                        print("CONSIDERING?")
 
                         self.reid_counter += 1
 
