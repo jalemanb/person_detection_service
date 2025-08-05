@@ -124,6 +124,7 @@ class MemoryManager:
         pos_idx = self._get_unique_index(self.n_pos, self._pos_sampled)
         pos_feat = self.pos_feats[pos_idx].unsqueeze(0) #+ torch.randn(1, self.num_parts, self.feature_dim)*0.001
         pos_vis = self.pos_vis[pos_idx].unsqueeze(0)
+        is_pseudo = False
 
         # self.scaling_factor = torch.norm(pos_feat, p=2, dim=2, keepdim=True) 
 
@@ -134,11 +135,12 @@ class MemoryManager:
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
             neg_feat = self.neg_feats[neg_idx].unsqueeze(0) #+ torch.randn(1, self.num_parts, self.feature_dim)*0.001
             neg_vis = self.neg_vis[neg_idx].unsqueeze(0) 
-        else:
+        elif use_pseudo:
             print("PSEUDO NEG")
             # Get a Pseudo negative
             neg_feat = torch.randn(1, self.num_parts, self.feature_dim)*0.001
             neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
+            is_pseudo = True
 
             # neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
             # neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
@@ -146,32 +148,38 @@ class MemoryManager:
 
             # neg_feat, neg_vis = self.generate_pseudo_negative()
 
-        # Stack and create labels
-        feats = torch.cat([neg_feat, pos_feat], dim=0)          # [2, 6, 512]
-        vis = torch.cat([neg_vis, pos_vis], dim=0)              # [2, 6]
-        labels = torch.tensor([[0], [1]], dtype=torch.float32)  # [2, 1]
+        # If there are Negative Samples Available or there are pseudo negatives allowed use them
+        # Otherwise only use positive features
+        if self.n_neg > 0 or use_pseudo:
+            feats = torch.cat([neg_feat, pos_feat], dim=0)          # [2, 6, 512]
+            vis = torch.cat([neg_vis, pos_vis], dim=0)              # [2, 6]
+            labels = torch.tensor([[0], [1]], dtype=torch.float32)  # [2, 1]
+        else:
+            feats = pos_feat                                        # [1, 6, 512]
+            vis = pos_vis                                           # [1, 6]
+            labels =  torch.tensor([[1]], dtype=torch.float32)      # [1, 1]
 
-        # Normalize features along the feature dimension
-        neg_feat_norm = F.normalize(neg_feat, p=2, dim=-1)  # [1, 6, 512]
-        pos_feat_norm = F.normalize(pos_feat, p=2, dim=-1)  # [1, 6, 512]
+        # This CODE IS USED TO DEBUG THE DECISIONS MADE BY THE MEMORY MANAGER
+        # # Normalize features along the feature dimension
+        # neg_feat_norm = F.normalize(neg_feat, p=2, dim=-1)  # [1, 6, 512]
+        # pos_feat_norm = F.normalize(pos_feat, p=2, dim=-1)  # [1, 6, 512]
 
-        # Multiply visibility masks to zero-out invisible parts
-        vis_mask = (neg_vis & pos_vis).unsqueeze(-1).float()  # [1, 6, 1]
+        # # Multiply visibility masks to zero-out invisible parts
+        # vis_mask = (neg_vis & pos_vis).unsqueeze(-1).float()  # [1, 6, 1]
 
-        # Compute cosine similarity for each part
-        cos_sim = (neg_feat_norm * pos_feat_norm).sum(dim=-1)  # [1, 6]
+        # # Compute cosine similarity for each part
+        # cos_sim = (neg_feat_norm * pos_feat_norm).sum(dim=-1)  # [1, 6]
 
-        # Mask out the invisible parts
-        masked_cos_sim = cos_sim * vis_mask.squeeze(-1)  # [1, 6]
+        # # Mask out the invisible parts
+        # masked_cos_sim = cos_sim * vis_mask.squeeze(-1)  # [1, 6]
 
-        # Compute average over visible parts
-        visible_counts = vis_mask.sum()
-        avg_cos_sim = masked_cos_sim.sum() / visible_counts.clamp(min=1.0)
+        # # Compute average over visible parts
+        # visible_counts = vis_mask.sum()
+        # avg_cos_sim = masked_cos_sim.sum() / visible_counts.clamp(min=1.0)
 
-        print(f"Average Cosine Similarity (visible parts only): {avg_cos_sim.item():.4f}")
+        # print(f"Average Cosine Similarity (visible parts only): {avg_cos_sim.item():.4f}")
 
-
-        return feats, vis, labels
+        return feats, vis, labels, is_pseudo
 
     def save(self, path): # UNDERSTOOD
         np.savez_compressed(path,

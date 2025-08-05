@@ -7,10 +7,12 @@ from ament_index_python.packages import get_package_share_directory
 from person_detection_temi.system.SOD import SOD
 import time
 
-save_boxes = False
+save_boxes = True
 save_bucket = False
 save_time = False
 show_img = True
+save_memory = True
+save_atentions = True
 
 def save_execution_times(times, filename):
     """
@@ -44,16 +46,12 @@ def write_bounding_boxes_to_file(bounding_boxes_per_step, output_file, append=Fa
         if bounding_boxes is None:  # Handle None for the entire step
             row.extend([0, 0, 0, 0])
         else:
-            for bbox in bounding_boxes:
-                if bbox is None:
-                    x, y, w, h = 0, 0, 0, 0
-                else:
-                    x1, y1, x2, y2 = bbox
-                    x = x1
-                    y = y1
-                    w = x2 - x1
-                    h = y2 - y1
-                row.extend([x, y, w, h])  # Append converted bounding box
+            x1, y1, x2, y2 = bounding_boxes
+            x = x1
+            y = y1
+            w = x2 - x1
+            h = y2 - y1
+            row.extend([x, y, w, h])  # Append converted bounding box
 
         rows.append(row)
 
@@ -221,20 +219,73 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     if save_time:
         save_execution_times(times, results_times_file)
 
-
     # Close OpenCV windows
     if show_img:
         cv2.destroyAllWindows()
 
+    if save_memory:
+        print("The Memmory Bucket was succesfully saved")
+        model.memory.save("/home/enrique/reid_research/memory_buffer.npz")
+
+    if save_atentions:
+        print("Saving attention maps and logits...")
+
+        # Get positive and negative sample counts
+        n_pos = model.memory.n_pos
+        n_neg = model.memory.n_neg
+
+        # Get all positive and negative features + visibilities
+        pos_feats, pos_vis = model.memory.pos_feats[:n_pos], model.memory.pos_vis[:n_pos]
+        neg_feats, neg_vis = model.memory.neg_feats[:n_neg], model.memory.neg_vis[:n_neg]
+
+        print(pos_vis)
+
+        print(neg_vis)
+
+        # Concatenate features and visibilities
+        feats = torch.cat([neg_feats, pos_feats], dim=0)  # shape [N, 6, 512]
+        vis = torch.cat([neg_vis, pos_vis], dim=0)        # shape [N, 6]
+
+        # Create corresponding labels: 0 = negative, 1 = positive
+        neg_labels = torch.zeros(n_neg, 1)
+        pos_labels = torch.ones(n_pos, 1)
+        labels = torch.cat([neg_labels, pos_labels], dim=0)  # shape [N, 1]
+
+        # Move to GPU
+        feats = feats.to(model.device)
+        vis = vis.to(model.device)
+        labels = labels.to(model.device)
+
+        # Inference
+        model.transformer_classifier.eval()
+        with torch.no_grad():
+            logits, attention_maps = model.transformer_classifier(feats, vis, return_mask=True)
+
+        # Move to CPU
+        logits_np = logits.cpu().numpy()                    # [N, 1]
+        labels_np = labels.cpu().numpy()                    # [N, 1]
+        attn_np = np.stack([a.cpu().numpy() for a in attention_maps], axis=0)  # [L, N, H, 7, 7]
+
+        # Save everything
+        save_path = "/home/enrique/reid_research/attentions_and_logits.npz"
+        np.savez_compressed(save_path,
+            attention_maps=attn_np,  # [L, N, H, 7, 7]
+            logits=logits_np,        # [N, 1]
+            labels=labels_np         # [N, 1]
+        )
+
+        print(f"✅ Attention maps and logits saved to {save_path}")
+
+
 def main():
 
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "ocl_demo", "ocl_demo2"]
-    # datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
+    datasets = ["corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
-    # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
+    datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
+    # datasets = ["sidewalk"]
     datasets = ["corridor1"]
-    # datasets = ["room"]
 
     for dataset in datasets:
         evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", crowd_dataset_path = "/home/enrique/Videos/crowds", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")

@@ -16,6 +16,7 @@ from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoi
 from person_detection_temi.system.memory_manager import MemoryManager
 from lion_pytorch import Lion
 from torchvision.ops import sigmoid_focal_loss
+import os
 
 def get_sinusoid_encoding(n_position, d_hid):
     """Sinusoidal positional encoding: shape (1, n_position, d_hid)"""
@@ -27,59 +28,155 @@ def get_sinusoid_encoding(n_position, d_hid):
     pe[:, 1::2] = torch.cos(position * div_term)
     return pe.unsqueeze(0)  # shape: (1, n_position, d_hid)
 
-# ---- Model ----
+class SingleTransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dropout=0.0, batch_first = True):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+        self.linear1 = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_model, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, src, key_padding_mask=None):
+        attn_output, attn_weights = self.self_attn(
+            src, src, src,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            average_attn_weights=False
+        )
+        src = src + self.dropout1(attn_output)
+        src = self.norm1(src)
+
+        ff_output = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(ff_output)
+        src = self.norm2(src)
+
+        return src, attn_weights
+
 class TinyTransformer(nn.Module):
-    def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout = 0.0):
+    def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout=0.0):
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
 
-        # CLS token (1, 1, 512)
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
-        
-        # Positional embeddings for CLS + 6 tokens → total 7
-        self.register_buffer("pos_embed", get_sinusoid_encoding(seq_len + 1, d_model))  # [1, 7, 512]
+        self.register_buffer("pos_embed", get_sinusoid_encoding(seq_len + 1, d_model))
 
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, dropout=dropout)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # Stack of custom encoder layers
+        self.encoder_layers = nn.ModuleList([
+            SingleTransformerEncoderLayer(d_model, nhead, dropout) for _ in range(num_layers)
+        ])
 
-        self.dropout = dropout
-
-        # MLP classifier
         self.mlp_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(),
-            nn.Dropout(self.dropout),
+            nn.Dropout(dropout),
             nn.Linear(d_model, num_classes)
         )
 
-    def forward(self, x, attention_mask=None):  # x: (B, 6, 512)
+
+    def forward(self, x, visibility_mask=None, return_mask=False):
         B = x.size(0)
 
-        # Prepend CLS token
-        cls_token = self.cls_token.expand(B, 1, self.d_model)  # (B, 1, 512)
-        x = torch.cat([cls_token, x], dim=1)  # (B, 7, 512)
+        # Add CLS token
+        cls_tokens = self.cls_token.expand(B, 1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)  # x: [B, seq_len+1, d_model]
 
-        # Add positional embeddings
+        # Positional encoding
         x = x + self.pos_embed[:, :x.size(1), :]
 
-        # If attention_mask is provided, adjust it
-        if attention_mask is not None:
-            # attention_mask is visibility: shape (B, 6), dtype=bool, True=visible
-            # CLS token is always visible
-            cls_mask = torch.ones((B, 1), dtype=torch.bool, device=attention_mask.device)
-            extended_mask = torch.cat([cls_mask, attention_mask], dim=1)  # (B, 7)
-            # Transformer expects True for *masked* tokens
-            key_padding_mask = ~extended_mask  # (B, 7)
+        attention_maps = []
+
+        # Process visibility mask → invert to key_padding_mask
+        key_padding_mask = None
+        if visibility_mask is not None:
+            # visibility_mask: [B, seq_len] with True = visible
+            # Pad with True for CLS token
+            cls_visible = torch.ones((B, 1), dtype=visibility_mask.dtype, device=visibility_mask.device)
+            visibility_mask = torch.cat([cls_visible, visibility_mask], dim=1)  # shape: [B, seq_len+1]
+            key_padding_mask = ~visibility_mask  # invert: True = mask
+
+        for layer in self.encoder_layers:
+            x, attn = layer(x, key_padding_mask=key_padding_mask)
+            attention_maps.append(attn)
+
+        cls_output = x[:, 0]
+
+        if return_mask:
+            return self.mlp_head(cls_output), attention_maps
         else:
-            key_padding_mask = None
+            return self.mlp_head(cls_output)
 
-        # Transformer
-        x = self.transformer(x, src_key_padding_mask = key_padding_mask)  # (B, 7, 512)
-        cls_output = x[:, 0]     # Take CLS token output
 
-        return self.mlp_head(cls_output)  # (B, num_classes), (B, 512)
+    def save_weights(self, path):
+        """Save model weights to a file."""
+        torch.save(self.state_dict(), path)
+
+    def load_weights(self, path, map_location=None):
+        """Load model weights from a file."""
+        self.load_state_dict(torch.load(path, map_location=map_location))
+        self.eval()  # Optional: switch to eval mode
+
+
+# ---- Model ----
+# class TinyTransformer(nn.Module):
+#     def __init__(self, d_model=512, nhead=2, num_layers=2, seq_len=7, num_classes=1, dropout = 0.0):
+#         super().__init__()
+#         self.d_model = d_model
+#         self.seq_len = seq_len
+
+#         # CLS token (1, 1, 512)
+#         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        
+#         # Positional embeddings for CLS + 6 tokens → total 7
+#         self.register_buffer("pos_embed", get_sinusoid_encoding(seq_len + 1, d_model))  # [1, 7, 512]
+
+#         # Transformer encoder
+#         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, dropout=dropout)
+#         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+#         self.dropout = dropout
+
+#         # MLP classifier
+#         self.mlp_head = nn.Sequential(
+#             nn.Linear(d_model, d_model),
+#             nn.ReLU(),
+#             nn.Dropout(self.dropout),
+#             nn.Linear(d_model, num_classes)
+#         )
+
+    # def forward(self, x, attention_mask=None):  # x: (B, 6, 512)
+    #     B = x.size(0)
+
+    #     # Prepend CLS token
+    #     cls_token = self.cls_token.expand(B, 1, self.d_model)  # (B, 1, 512)
+    #     x = torch.cat([cls_token, x], dim=1)  # (B, 7, 512)
+
+    #     # Add positional embeddings
+    #     x = x + self.pos_embed[:, :x.size(1), :]
+
+    #     # If attention_mask is provided, adjust it
+    #     if attention_mask is not None:
+    #         # attention_mask is visibility: shape (B, 6), dtype=bool, True=visible
+    #         # CLS token is always visible
+    #         cls_mask = torch.ones((B, 1), dtype=torch.bool, device=attention_mask.device)
+    #         extended_mask = torch.cat([cls_mask, attention_mask], dim=1)  # (B, 7)
+    #         # Transformer expects True for *masked* tokens
+    #         key_padding_mask = ~extended_mask  # (B, 7)
+    #     else:
+    #         key_padding_mask = None
+
+    #     # Transformer
+    #     x = self.transformer(x, src_key_padding_mask = key_padding_mask)  # (B, 7, 512)
+    #     cls_output = x[:, 0]     # Take CLS token output
+
+    #     return self.mlp_head(cls_output)  # (B, num_classes), (B, 512)
+
+
 
 class SOD:
     def __init__(self, 
@@ -90,12 +187,29 @@ class SOD:
                  logger_level=logging.DEBUG,
             ) -> None:
         
+        log_file_path="/home/enrique/reid_research/my_log.log"
+
         self.logger = logging.getLogger("SOD")
-        formatter = logging.Formatter("{levelname} - {message}", style="{")
-        self.logger.setLevel(logger_level)
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
+
+        # Prevent duplicate handlers
+        if not self.logger.hasHandlers():
+            self.logger.setLevel(logger_level)
+
+            # Formatter
+            formatter = logging.Formatter("{asctime} - {levelname} - {message}", style="{")
+
+            # Console handler
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
+            # File handler
+            os.makedirs(os.path.dirname(log_file_path) or ".", exist_ok=True)
+            file_handler = logging.FileHandler(log_file_path)
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+
+        self.logger.info("SOD logger initialized. Logging to file.")
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -121,7 +235,7 @@ class SOD:
         self.target_feats = None
         self.reid_counter = 0
         self.reid_count_thr = 3
-        self.blacklist = []
+        self.blacklist = set()
         ############################
 
         # ONLINE training ############################
@@ -268,13 +382,9 @@ class SOD:
             # YOLO Detection Results
             detections_imgs, detection_kpts, bboxes, poses, track_ids, original_kpts = detections
 
-            # Deactivate learning when intersection between bounding boxes to 
-            # Have god qualit samples
-            iou_intersect = False
-            # if self.target_id in track_ids:
-            #     if bboxes.shape[0] > 1:
-            #         target_id_idx = np.where(track_ids == self.target_id)[0]
-            #         _, iou_intersect = self.compute_iou_with_flag_numpy(bboxes, bboxes[target_id_idx])
+            if self.target_id is not None and self.target_id in track_ids:
+                self.blacklist.update(tid for tid in track_ids if tid != self.target_id)
+                print("BLACKLIST", list(self.blacklist))  # Convert to list only for printing
 
             # If no detection (No human) then stay on reid mode and return Nothing
             if self.target_id is not None and self.target_id not in track_ids:
@@ -283,7 +393,7 @@ class SOD:
                         args=(detections_imgs, detection_kpts, track_ids),
                         daemon=True
                     ).start()
-            elif self.target_id is not None and self.target_id in track_ids and not iou_intersect:
+            elif self.target_id is not None and self.target_id in track_ids:
                 # Collect samples for online training the feature extractor in another train
                 threading.Thread(
                         target=self.updating_reid,
@@ -469,7 +579,7 @@ class SOD:
                     self.memory.insert_negative(feats)
 
                 # Get a sample based on the memory manager policy
-                mem_feats, mem_vis, label = self.memory.get_sample()
+                mem_feats, mem_vis, label, is_pseudo = self.memory.get_sample(use_pseudo=False)
 
                 # Move everything into device
                 mem_feats = mem_feats.to(self.device)
@@ -506,6 +616,7 @@ class SOD:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.transformer_classifier.parameters(), max_norm=0.5)
                 self.classifier_optimizer.step()  
+                self.logger.info(f"loss: {loss.item()}, is_pseudo: {is_pseudo}")
                 # Online Continual Learning #################################################################################
                 #############################################################################################################
 
@@ -525,11 +636,20 @@ class SOD:
 
                 with torch.inference_mode():
 
+                    # Filter out blacklisted IDs
+                    valid_indices = [i for i, tid in enumerate(tracked_ids) if tid not in self.blacklist]
+
+                    if not valid_indices:
+                        print("No valid IDs to reidentify (all blacklisted).")
+                        return
+                    
+                    tracked_ids = np.array(tracked_ids)[valid_indices].tolist()
+                
                     # Consider trying to reid one at a time
 
                     self.transformer_classifier.eval()
 
-                    f_, v_ = self.feature_extraction(detections_imgs, detection_kpts)
+                    f_, v_ = self.feature_extraction(detections_imgs[valid_indices], detection_kpts[valid_indices])
 
                     logits = self.transformer_classifier(f_, v_)
 
@@ -542,7 +662,7 @@ class SOD:
 
                     if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
 
-                        print("CONSIDERING?")
+                        print("CONSIDERING?:", tracked_ids[class_idx])
 
                         self.reid_counter += 1
 
