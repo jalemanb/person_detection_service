@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
-from geometry_msgs.msg import Pose, TransformStamped, PoseArray
+from geometry_msgs.msg import Pose, TransformStamped, PoseArray, PoseStamped
 from person_detection_msgs.msg import Candidate, CandidateArray
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from cv_bridge import CvBridge
@@ -32,6 +32,11 @@ class HumanPoseEstimationNode(Node):
         self.human_cartesian_detection_pub = self.create_publisher(
             PoseArray, 
             '/cartesian_detections_local', 
+            10
+        )
+        self.target_human_cartesian_detection_pub = self.create_publisher(
+            PoseStamped, 
+            '/target_cartesian_detection_local', 
             10
         )
         self.publisher_debug_detection_image_compressed = self.create_publisher(
@@ -84,8 +89,14 @@ class HumanPoseEstimationNode(Node):
         self.model = SOD(
             yolo_model_path = yolo_path, 
             feature_extracture_cfg_path = feature_extracture_cfg_path, 
-            feature_extracture_model_path = "",
-            tracker_system_path=bytetrack_path
+            tracker_system_path=bytetrack_path,
+            yolo_detection_thr = 0.5,
+            use_experimental_tracker = True,
+            use_mb=True,
+            max_age = 2,
+            min_hits = 3, 
+            iou_threshold = 0.2, 
+            mb_threshold = 6.0, 
         )
 
         self.model.to(device)
@@ -218,6 +229,13 @@ class HumanPoseEstimationNode(Node):
                     # Publish the Pose Detections Array msg
                     self.human_cartesian_detection_pub.publish(pose_array_msg)
 
+                # Publish the pose of the target person in case a cartesian tracker system needs it
+                if (target_id is not None) and \
+                    (target_id in tracked_ids) and \
+                    (self.target_human_cartesian_detection_pub.get_subscription_count() > 0):
+                        target_human_msg = self.get_target_human_msg(person_poses, target_id, tracked_ids, self.frame_id)
+                        self.target_human_cartesian_detection_pub.publish(target_human_msg)
+
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
             # self.get_logger().info('Publishing Compressed Images with Detections for Debugging Purposes')
@@ -237,7 +255,8 @@ class HumanPoseEstimationNode(Node):
 
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = box
-                
+                x1, y1, x2, y2 = map(int, box)
+
                 # Invalid detections go red
                 cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (0, 0, 255), thickness)
 
@@ -266,6 +285,25 @@ class HumanPoseEstimationNode(Node):
         else:
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
 
+
+    def get_target_human_msg(self, poses, target_id, tracked_ids, frame_id):
+        pose_stamped_msg = PoseStamped()
+        pose_stamped_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_stamped_msg.header.frame_id = frame_id
+
+        target_idx = np.where(tracked_ids == target_id)[0]
+
+        pose_stamped_msg.pose.position.x = float(poses[target_idx, 0])
+        pose_stamped_msg.pose.position.y = float(poses[target_idx, 1])
+        pose_stamped_msg.pose.position.z = float(poses[target_idx, 2])
+        pose_stamped_msg.pose.orientation.x = 0.
+        pose_stamped_msg.pose.orientation.y = 0.
+        pose_stamped_msg.pose.orientation.z = 0.
+        pose_stamped_msg.pose.orientation.w = 1.
+
+        return pose_stamped_msg
+
+
     def get_human_msgs(self, poses, kpts, tracked_ids, frame_id):
         # Prepare the Image Detections Array msg
         image_detection_array_msg = CandidateArray()
@@ -284,7 +322,7 @@ class HumanPoseEstimationNode(Node):
             pose_msg = Pose()
 
             # Bounding Box Tracking ID
-            image_detection_msg.id = int(tracked_id.item())
+            image_detection_msg.id = int(tracked_id)
 
             # Target image position\
             # The indices 0 to 5 include all the keypoints belonging to the head, nose, ears, etc.

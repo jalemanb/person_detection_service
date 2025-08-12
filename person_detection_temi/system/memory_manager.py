@@ -1,25 +1,24 @@
 import torch
 import torch.nn.functional as F
-from torch.distributions.multivariate_normal import MultivariateNormal
 import numpy as np
 import random
 
 class MemoryManager:
     def __init__(self, 
                  max_samples=1000, 
-                 alpha=0.5, 
                  sim_thresh=0.8, 
                  feature_dim=512, 
                  num_parts=6,
-                 pseudo_std = 0.001):
+                 pseudo_std = 0.001,
+                 beta = 0.1):
         
         # Memory Manager Parameters
         self.max_samples = max_samples
-        self.alpha = alpha
         self.sim_thresh = sim_thresh
         self.feature_dim = feature_dim
         self.num_parts = num_parts
         self.pseudo_std = pseudo_std
+        self.beta = beta # percentage of time to use pseudonegative samples
         self.device = 'cpu'
 
         # Storage variables
@@ -69,7 +68,7 @@ class MemoryManager:
                 sims = self._avg_cos_sim(f, v, mem_f[:n_total], mem_v[:n_total])
                 max_sim, max_idx = sims.max(0)
                 if max_sim >= self.sim_thresh:
-                    mem_f[max_idx] = f #self.alpha * mem_f[max_idx] + (1 - self.alpha) * f
+                    mem_f[max_idx] = f 
                     mem_v[max_idx] = v
 
                     counts[max_idx] += 1
@@ -102,16 +101,6 @@ class MemoryManager:
         vis = feats_vis[1].detach().cpu()
         self.n_neg = self._insert(feats, vis, self.neg_feats, self.neg_vis, self.neg_counts, self.n_neg)
 
-    def generate_pseudo_negative(self): # UNDERSTOOD
-        
-        mean = torch.zeros(self.feature_dim)
-        cov = torch.eye(self.feature_dim) * (self.pseudo_std ** 2)
-        dist = MultivariateNormal(mean, covariance_matrix=cov)
-
-        samples = torch.stack([dist.sample() for _ in range(self.num_parts)], dim=0)  # [6, 512]
-        visibility = torch.ones(self.num_parts, dtype=torch.bool)                     # [6]
-
-        return samples.unsqueeze(0), visibility.unsqueeze(0)                     # [1, 6, 512]
 
     def get_sample(self, use_pseudo=True): # UNDERSTOOD
         if self.n_pos == 0:
@@ -129,7 +118,7 @@ class MemoryManager:
         # self.scaling_factor = torch.norm(pos_feat, p=2, dim=2, keepdim=True) 
 
         # Get negative sample (real or pseudo)
-        if self.n_neg > 0 and (not use_pseudo or random.random() > 0.1):
+        if self.n_neg > 0 and (not use_pseudo or random.random() > self.beta):
             print("REAL NEG")
 
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
@@ -138,15 +127,10 @@ class MemoryManager:
         elif use_pseudo:
             print("PSEUDO NEG")
             # Get a Pseudo negative
-            neg_feat = torch.randn(1, self.num_parts, self.feature_dim)*0.001
+            neg_feat = torch.randn(1, self.num_parts, self.feature_dim)*self.pseudo_std
             neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
             is_pseudo = True
 
-            # neg_feat = torch.randn(1, self.num_parts, self.feature_dim)
-            # neg_feat = neg_feat / neg_feat.norm(dim=2, keepdim=True)
-            # neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)
-
-            # neg_feat, neg_vis = self.generate_pseudo_negative()
 
         # If there are Negative Samples Available or there are pseudo negatives allowed use them
         # Otherwise only use positive features

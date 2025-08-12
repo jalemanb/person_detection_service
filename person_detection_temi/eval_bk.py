@@ -105,6 +105,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     # dataset = "walking_outdoor"
     if dataset in robot_datasets:
         rgb_dir = f"{robot_dataset_path}/{dataset}/left/"
+        depth_dir = f"{robot_dataset_path}/{dataset}/depth/"
         template_img_path = os.path.join(rgb_dir+f'template_{dataset}.jpg')
     ### Stotos Lab Datasets ####################################################
 
@@ -124,10 +125,11 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         feature_extracture_cfg_path = feature_extracture_cfg_path, 
         tracker_system_path = bytetrack_path,
         use_experimental_tracker=True,
-        use_mb=False,
+        use_mb=True,
         kpr_kpt_conf = 0.3,
         reid_count_thr = 1,
         class_prediction_thr = 0.8,
+        sim_thresh = 0.9, 
     )
     model.to(device)
 
@@ -144,30 +146,32 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         [f for f in os.listdir(rgb_dir) if (f.startswith('frame') or f.startswith('rgb') or f.startswith('left')) and (f.endswith('.png') or f.endswith('.jpg'))],
         key=lambda x: int(''.join(filter(str.isdigit, x)))
     )
+    depth_images = sorted(
+        [f for f in os.listdir(rgb_dir) if (f.startswith('frame') or f.startswith('depth') or f.startswith('left')) and (f.endswith('.png') or f.endswith('.jpg'))],
+        key=lambda x: int(''.join(filter(str.isdigit, x)))
+    )
+
 
 
     bboxes = []
     times = []
 
     # Iterate through each RGB image
-    for i, rgb_img_name in enumerate(rgb_images):
-
-        if i == len(rgb_images) //2:
-            break
+    for i, (rgb_img_name, depth_img_name) in enumerate(zip(rgb_images, depth_images)):
 
         rgb_img_path = os.path.join(rgb_dir, rgb_img_name)
+        depth_img_path = os.path.join(depth_dir, depth_img_name)
 
         rgb_img = cv2.imread(rgb_img_path, cv2.IMREAD_COLOR)  # Read RGB as BGR8
         # rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
+        depth_img = (cv2.imread(rgb_img_path, cv2.IMREAD_ANYDEPTH)*255).astype(np.uint16)
+
 
         height, width, _ = rgb_img.shape  # Get dimensions
 
-        # Generate a random depth image (grayscale)
-        depth_img = np.random.randint(0, 256, (height, width), dtype=np.uint8)
-
         # Perform Detection
         start_time = time.time()
-        results = model.detect(rgb_img, depth_img, camera_params=[1.0, 1.0, 1.0, 1.0])
+        results = model.detect(rgb_img, depth_img, camera_params=[338.5, 338.5, 342.6, 176.2])
         end_time = time.time()
 
         # Compute execution time in milliseconds
@@ -183,13 +187,13 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
             person_poses, bbox, _, tracked_ids, kpts = results
             
 
-            for j in range(len(bbox)):
+            for i in range(len(bbox)):
 
-                x1, y1, x2, y2 = map(int, bbox[j])
+                x1, y1, x2, y2 = map(int, bbox[i])
 
                 if show_img:
                     cv2.rectangle(rgb_img, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Green Box
-                    cv2.putText(rgb_img, f"ID: {tracked_ids[j]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
+                    cv2.putText(rgb_img, f"ID: {tracked_ids[i]}", (x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
             if model.target_id in tracked_ids:
