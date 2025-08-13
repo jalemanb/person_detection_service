@@ -17,18 +17,9 @@
 """
 from __future__ import print_function
 
-import os
 import numpy as np
-import matplotlib
-import scipy
 
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from skimage import io
 
-import glob
-import time
 import argparse
 from filterpy.kalman import KalmanFilter
 import torch

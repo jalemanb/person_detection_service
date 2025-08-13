@@ -35,7 +35,7 @@ class HumanPoseEstimationNode(Node):
             10
         )
         self.target_human_cartesian_detection_pub = self.create_publisher(
-            PoseStamped, 
+            PoseArray, 
             '/target_cartesian_detection_local', 
             10
         )
@@ -233,8 +233,16 @@ class HumanPoseEstimationNode(Node):
                 if (target_id is not None) and \
                     (target_id in tracked_ids) and \
                     (self.target_human_cartesian_detection_pub.get_subscription_count() > 0):
-                        target_human_msg = self.get_target_human_msg(person_poses, target_id, tracked_ids, self.frame_id)
+                        target_human_msg = self.get_target_human_msg(person_poses, target_id, tracked_ids, self.frame_id, empty=False)
                         self.target_human_cartesian_detection_pub.publish(target_human_msg)
+                else:
+                    # IF tracks available but none is the target person then publish empty msg
+                    target_human_msg = self.get_target_human_msg(None, None, None, self.frame_id, empty=True)
+                    self.target_human_cartesian_detection_pub.publish(target_human_msg)
+        else:
+            # If No Target Available in IMG Publish Empty Msg 
+            target_human_msg = self.get_target_human_msg(None, None, None, self.frame_id, empty=True)
+            self.target_human_cartesian_detection_pub.publish(target_human_msg)
 
         # Publish CompressedImage with detection Bounding Box for Visualizing the proper detection of the desired target person
         if self.publisher_debug_detection_image_compressed.get_subscription_count() > 0:
@@ -286,22 +294,32 @@ class HumanPoseEstimationNode(Node):
             self.publisher_debug_detection_image.publish(self.cv_bridge.cv2_to_imgmsg(rgb_img, encoding='bgr8'))
 
 
-    def get_target_human_msg(self, poses, target_id, tracked_ids, frame_id):
-        pose_stamped_msg = PoseStamped()
-        pose_stamped_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_stamped_msg.header.frame_id = frame_id
+    def get_target_human_msg(self, poses, target_id, tracked_ids, frame_id, empty = False):
+        pose_arrray_msg = PoseArray()
+        pose_arrray_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_arrray_msg.header.frame_id = frame_id
 
-        target_idx = np.where(tracked_ids == target_id)[0]
+        if empty:
 
-        pose_stamped_msg.pose.position.x = float(poses[target_idx, 0])
-        pose_stamped_msg.pose.position.y = float(poses[target_idx, 1])
-        pose_stamped_msg.pose.position.z = float(poses[target_idx, 2])
-        pose_stamped_msg.pose.orientation.x = 0.
-        pose_stamped_msg.pose.orientation.y = 0.
-        pose_stamped_msg.pose.orientation.z = 0.
-        pose_stamped_msg.pose.orientation.w = 1.
+            return pose_arrray_msg
+        
+        else:
 
-        return pose_stamped_msg
+            target_idx = np.where(tracked_ids == target_id)[0]
+
+            pose_msg = Pose()
+
+            pose_msg.position.x = float(poses[target_idx, 0])
+            pose_msg.position.y = float(poses[target_idx, 1])
+            pose_msg.position.z = float(poses[target_idx, 2])
+            pose_msg.orientation.x = 0.
+            pose_msg.orientation.y = 0.
+            pose_msg.orientation.z = 0.
+            pose_msg.orientation.w = 1.
+
+            pose_arrray_msg.poses.append(pose_msg)
+
+            return pose_arrray_msg
 
 
     def get_human_msgs(self, poses, kpts, tracked_ids, frame_id):
