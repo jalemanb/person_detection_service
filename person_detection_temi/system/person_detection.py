@@ -16,38 +16,45 @@ from ament_index_python.packages import get_package_share_directory
 from scipy.spatial.transform import Rotation as R
 import time
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 from std_srvs.srv import Trigger
 
 class HumanPoseEstimationNode(Node):
     def __init__(self):
         super().__init__('pose_estimation_node')
 
+        sensor_fast_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,  # no retries (lower latency)
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,                                    # only the newest
+            durability=DurabilityPolicy.VOLATILE        # do not latch
+        )
+
         # Create publishers
         self.human_image_detection_pub = self.create_publisher(
             CandidateArray, 
             '/image_detections', 
-            10
+            1
         )
         self.human_cartesian_detection_pub = self.create_publisher(
             PoseArray, 
             '/cartesian_detections_local', 
-            10
+            1
         )
         self.target_human_cartesian_detection_pub = self.create_publisher(
             PoseArray, 
             '/target_cartesian_detection_local', 
-            10
+            1
         )
         self.publisher_debug_detection_image_compressed = self.create_publisher(
             CompressedImage, 
             '/human_detection/img_compressed', 
-            10
+            1
         )
         self.publisher_debug_detection_image = self.create_publisher(
             Image, 
             '/human_detection/img_raw', 
-            10
+            1
         )
 
         self.set_target_id_srv = self.create_service(Trigger, 'set_target_person', self.set_target_id_callback)
@@ -90,7 +97,7 @@ class HumanPoseEstimationNode(Node):
             yolo_model_path = yolo_path, 
             feature_extracture_cfg_path = feature_extracture_cfg_path, 
             tracker_system_path=bytetrack_path,
-            yolo_detection_thr = 0.5,
+            yolo_detection_thr = 0.3,
             use_experimental_tracker = True,
             use_mb=True,
             max_age = 2,
@@ -125,21 +132,21 @@ class HumanPoseEstimationNode(Node):
         self.depth_sub = Subscriber(
             self, 
             CompressedImage, 
-            # '/temi/camera/aligned_depth_to_color/image_raw/compressed',
-            '/camera/camera/aligned_depth_to_color/image_raw/compressed',
-            qos_profile=qos_profile_sensor_data)
+            '/temi/camera/aligned_depth_to_color/image_raw/compressed',
+            # '/camera/camera/aligned_depth_to_color/image_raw/compressed',
+            qos_profile=sensor_fast_qos)
         self.rgb_sub = Subscriber(
             self, 
             CompressedImage, 
-            # '/temi/camera/color/image_raw/compressed',
-            '/camera/camera/color/image_raw/compressed',
-            qos_profile=qos_profile_sensor_data)
+            '/temi/camera/color/image_raw/compressed',
+            # '/camera/camera/color/image_raw/compressed',
+            qos_profile=sensor_fast_qos)
         self.info_sub = Subscriber(
             self, 
             CameraInfo, 
-            # '/temi/camera/color/camera_info',
-            '/camera/camera/color/camera_info',
-            qos_profile=qos_profile_sensor_data)
+            '/temi/camera/color/camera_info',
+            # '/camera/camera/color/camera_info',
+            qos_profile=sensor_fast_qos)
 
         # ApproximateTimeSynchronizer allows small timestamp mismatch
         self.ts = ApproximateTimeSynchronizer(

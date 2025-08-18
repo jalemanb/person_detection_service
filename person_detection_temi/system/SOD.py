@@ -53,7 +53,7 @@ class SOD:
         self.yolo_detection_thr = yolo_detection_thr
 
         # Prevent duplicate handlers
-        if not self.logger.hasHandlers():
+        if False: #not self.logger.hasHandlers():
             self.logger.setLevel(logger_level)
 
             # Formatter
