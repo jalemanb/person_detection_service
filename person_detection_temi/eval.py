@@ -126,7 +126,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         use_experimental_tracker=True,
         use_mb=False,
         kpr_kpt_conf = 0.3,
-        reid_count_thr = 1,
+        reid_count_thr = 3,
         class_prediction_thr = 0.8,
     )
     model.to(device)
@@ -181,7 +181,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         if results is not None:
 
             person_poses, bbox, _, tracked_ids, kpts = results
-            
+                
 
             for j in range(len(bbox)):
 
@@ -295,7 +295,7 @@ def main():
     # datasets = ["sidewalk"]
     # datasets = ["ocl_demo2"]
     datasets = ["sidewalk", "walking_outdoor"]
-    datasets = ["room"]
+    datasets = ["corridor1"]
 
     for dataset in datasets:
         evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", crowd_dataset_path = "/home/enrique/Videos/crowds", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")

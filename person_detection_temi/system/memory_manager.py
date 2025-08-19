@@ -106,8 +106,6 @@ class MemoryManager:
         if self.n_pos == 0:
             return None
 
-        print("NEG N", self.n_neg)
-        print("POS N", self.n_pos)
 
         # Get positive sample
         pos_idx = self._get_unique_index(self.n_pos, self._pos_sampled)
@@ -119,13 +117,11 @@ class MemoryManager:
 
         # Get negative sample (real or pseudo)
         if self.n_neg > 0 and (not use_pseudo or random.random() > self.beta):
-            print("REAL NEG")
 
             neg_idx = self._get_unique_index(self.n_neg, self._neg_sampled)
             neg_feat = self.neg_feats[neg_idx].unsqueeze(0) #+ torch.randn(1, self.num_parts, self.feature_dim)*0.001
             neg_vis = self.neg_vis[neg_idx].unsqueeze(0) 
         elif use_pseudo:
-            print("PSEUDO NEG")
             # Get a Pseudo negative
             neg_feat = torch.randn(1, self.num_parts, self.feature_dim)*self.pseudo_std
             neg_vis = torch.ones(1, self.num_parts, dtype=torch.bool)

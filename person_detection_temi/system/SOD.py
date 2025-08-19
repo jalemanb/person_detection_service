@@ -8,6 +8,7 @@ import cv2
 import time
 import numpy as np
 import threading
+import shutil
 
 from person_detection_temi.system.kpr_reid import KPR as KPR_torch
 from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
@@ -15,6 +16,7 @@ from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoi
 from person_detection_temi.system.memory_manager import MemoryManager
 from person_detection_temi.system.sort import Sort
 from person_detection_temi.system.tinyTransformer import TinyTransformer, nn
+from pathlib import Path
 import os
 
 class SOD:
@@ -45,7 +47,14 @@ class SOD:
                  beta = 0.1,
             ) -> None:
         
-        log_file_path="/home/enrique/reid_research/my_log.log"
+
+        log_dir = Path.cwd() / "eval_results"          # ./eval_results
+
+        if log_dir.exists():
+            shutil.rmtree(log_dir)                   # DANGER: wipes the folder
+
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = log_dir / "eval_results.log"   # ./eval_results/eval_results.log
 
         self.logger = logging.getLogger("SOD")
 
@@ -53,7 +62,7 @@ class SOD:
         self.yolo_detection_thr = yolo_detection_thr
 
         # Prevent duplicate handlers
-        if False: #not self.logger.hasHandlers():
+        if not self.logger.hasHandlers():
             self.logger.setLevel(logger_level)
 
             # Formatter
@@ -178,9 +187,8 @@ class SOD:
                 )
             self.yolo_stream.synchronize()  # Wait for GPU ops to finish
             end_time = time.time()
-            masked_detections_time = (end_time - start_time) * 1000  # Convert to milliseconds
-            # print(f"masked_detections execution time: {masked_detections_time:.2f} ms")
-            total_execution_time += masked_detections_time
+            masked_detections_time = (end_time - start_time)  # Convert to milliseconds
+            self.logger.info(f"detection: {masked_detections_time:.6f}")
 
             if len(detections) < 1:
                 # Call the sort even with empty detections
@@ -200,7 +208,14 @@ class SOD:
 
                 dets = np.concatenate([bboxes, poses[:, [0, 2]]], axis=1)
 
+                start_time = time.time()
+
                 sort_results = self.experimental_tracker.update(dets, detections_imgs, detection_kpts, original_kpts)
+
+                end_time = time.time()
+                tracking_time = (end_time - start_time)  # Convert to milliseconds
+
+                self.logger.info(f"tracking: {tracking_time:.6f}")
 
                 if sort_results is None:
                     return None
@@ -225,7 +240,6 @@ class SOD:
             if self.target_id is not None and self.target_id in track_ids:
                 self.blacklist.update(tid for tid in track_ids if tid != self.target_id)
                 self.blacklist.intersection_update(track_ids)
-                print("BLACKLIST", list(self.blacklist))  # Convert to list only for printing
 
             # If no detection (No human) then stay on reid mode and return Nothing
             if self.target_id is not None and self.target_id not in track_ids:
@@ -381,15 +395,14 @@ class SOD:
 
         text = "TARGET" if is_positive else f"DISTRACTOR id: {distractor_id_}" 
 
-        print("EXTRACTING FEATURES FROM: ", text)
-
         return idx_to_extract, is_positive
-
 
     def updating_reid(self, detections_imgs, detection_kpts, tracked_ids):
         if not self.reid_lock.acquire(blocking=False):
             return  # Skip if already running
         try:
+            start_time = time.time()
+
             with torch.cuda.stream(self.reid_stream):
 
                 # Get the index belonging to the target id
@@ -423,9 +436,6 @@ class SOD:
                 self.transformer_classifier.train()
 
                 logits = self.transformer_classifier(mem_feats, mem_vis)
-
-                print("Prediction_thr:", self.class_prediction_thr)
-                print("Probs:", torch.sigmoid(logits).detach().cpu().numpy().T)
                 
                 loss = self.classifier_criterion(logits.flatten(), label.flatten())
                 self.classifier_optimizer.zero_grad()
@@ -438,6 +448,10 @@ class SOD:
 
             self.reid_stream.synchronize()
 
+            end_time = time.time()
+            train_time = (end_time - start_time)  # Convert to milliseconds
+
+            self.logger.info(f"train: {train_time:.6f}")
         finally:
             self.reid_lock.release()
 
@@ -446,6 +460,7 @@ class SOD:
             return  # Skip if already running
 
         try:
+            start_time = time.time()
 
             with torch.cuda.stream(self.reid_stream):
                 # This is the reidentification procedure
@@ -473,11 +488,7 @@ class SOD:
 
                     class_idx = np.argmax(result[:, 0])
 
-                    print("BEST:", result[class_idx, 0])
-
                     if result[class_idx, 0] > np.floor(self.class_prediction_thr*10)/10:
-
-                        print("CONSIDERING?:", tracked_ids[class_idx])
 
                         self.reid_counter += 1
 
@@ -485,14 +496,16 @@ class SOD:
 
                             self.target_id = tracked_ids[class_idx]
                             self.reid_counter = 0
-
                     else:
                         self.reid_counter = 0
    
             self.reid_stream.synchronize()
 
-        finally:
+            end_time = time.time()
+            reid_time = (end_time - start_time)  # Convert to milliseconds
 
+            self.logger.info(f"reid: {reid_time:.6f}")
+        finally:
             self.reid_lock.release()
 
     def feature_extraction(self, detections_imgs, detection_kpts):

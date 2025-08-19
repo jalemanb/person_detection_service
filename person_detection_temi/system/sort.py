@@ -92,8 +92,6 @@ def convert_x_to_bbox(x, score=None):
       - cartesian_x,cartesian_z are the real-world coordinates
     """
 
-    print("wtf", x[2])
-    print("wtf", x[3])
     w = np.sqrt(x[2] * x[3])
     h = x[2] / w
     cartesian_x = x[4] if len(x) > 4 else 0
@@ -353,8 +351,6 @@ class Sort(object):
 
         matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets, trks, self.trackers, self.iou_threshold, self.mb_threshold, use_mb=self.use_mb)
 
-        print("Correct Detection Matches", matched[:, 0])
-
         # update matched trackers with assigned detections
         for m in matched:
             self.trackers[m[1]].update(dets[m[0], :])
@@ -385,7 +381,6 @@ class Sort(object):
             i -= 1
             # remove dead tracklet
             if (trk.time_since_update > self.max_age):
-                print(f"REMOVING: TRACK {trk.id+1}")
                 self.trackers.pop(i)
                 self.detections_imgs.pop(i)
                 self.detection_kpts.pop(i)
