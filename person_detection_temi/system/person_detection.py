@@ -117,6 +117,7 @@ class HumanPoseEstimationNode(Node):
         
         # Frame ID from where the human is being detected
         self.frame_id = None
+        self.header = None
         self.target_frame = 'temi/base_link'
 
         # Quaternion for 90 degrees rotation around the x-axis
@@ -132,19 +133,19 @@ class HumanPoseEstimationNode(Node):
         self.depth_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/temi/camera/aligned_depth_to_color/image_raw/compressed',
+            '/ranger/camera/camera_front/aligned_depth_to_color/image_raw/compressed',
             # '/camera/camera/aligned_depth_to_color/image_raw/compressed',
             qos_profile=sensor_fast_qos)
         self.rgb_sub = Subscriber(
             self, 
             CompressedImage, 
-            '/temi/camera/color/image_raw/compressed',
+            '/ranger/camera/camera_front/color/image_raw/compressed',
             # '/camera/camera/color/image_raw/compressed',
             qos_profile=sensor_fast_qos)
         self.info_sub = Subscriber(
             self, 
             CameraInfo, 
-            '/temi/camera/color/camera_info',
+            '/ranger/camera/camera_front/color/camera_info',
             # '/camera/camera/color/camera_info',
             qos_profile=sensor_fast_qos)
 
@@ -176,6 +177,7 @@ class HumanPoseEstimationNode(Node):
     def image_callback(self, rgb_msg, depth_msg, info_msg):
 
         self.frame_id = rgb_msg.header.frame_id
+        self.header = rgb_msg.header
 
         # Convert ROS Image messages to OpenCV images
         depth_image = compressed_imgmsg_to_cv2(depth_msg, desired_encoding='16UC1')
@@ -305,6 +307,7 @@ class HumanPoseEstimationNode(Node):
         pose_arrray_msg = PoseArray()
         pose_arrray_msg.header.stamp = self.get_clock().now().to_msg()
         pose_arrray_msg.header.frame_id = frame_id
+        # pose_arrray_msg.header = self.header
 
         if empty:
 

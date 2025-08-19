@@ -503,69 +503,136 @@ class SOD:
                     return_heatmaps=False)
         
         return (fg_, vg_)
-    
-    def get_person_pose(self, bbox, kpts, depth_img, win_size=1):
+        
+    def get_person_pose(self, bbox, kpts, depth_img,
+                                max_depth_m: float = 6.0,
+                                edge_shrink: float = 0.15,
+                                floor_deemph: float = 0.6,
+                                band_m: float = 0.25,
+                                huber_sigma_m: float = 0.10,
+                                min_pix: int = 50):
         """
-        Estimate 3D pose from keypoints and depth image using the mode of the depth
-        values in a window around confident keypoints. Vectorized implementation.
+        Robust 3D pose estimate [x,y,z] from a depth image and a person bbox only.
 
-        Args:
-            bbox: [x_min, y_min, x_max, y_max] (not used)
-            kpts: numpy array of shape (17, 3) where [:, 0] = u, [:, 1] = v, [:, 2] = conf
-            depth_img: numpy array HxW with depth values in mm
-            win_size: int, half-size of the window around each keypoint
+        Args (same call signature as before):
+            bbox: [x_min, y_min, x_max, y_max] in pixels
+            kpts: unused (kept for compatibility)
+            depth_img: HxW depth in millimeters
+        Tunables:
+            max_depth_m: reject anything beyond this (meters)
+            edge_shrink: shrink bbox on each side to avoid background bleed
+            floor_deemph: downweight bottom rows inside the bbox (0..1)
+            band_m: +/- depth band around the foreground estimate used to mask (meters)
+            huber_sigma_m: Huber-like depth weighting scale (meters)
+            min_pix: minimum valid pixels needed
 
         Returns:
-            [x, y, z] in meters in the camera optical frame
+            [x, y, z] in meters in the camera optical frame (y positive down).
+            Returns [-100., -100., -100.] if robust estimate not possible.
         """
-        if depth_img is None or kpts is None or len(kpts) == 0:
+        if depth_img is None:
             return [-100., -100., -100.]
 
         H, W = depth_img.shape
-
-        kpts = kpts.cpu().numpy()
-
-        # Filter keypoints with confidence > 0.5
-        valid_kpts = kpts[kpts[:, 2] > 0.5]
-        if len(valid_kpts) == 0:
+        x1, y1, x2, y2 = map(int, bbox)
+        x1 = max(0, min(W - 1, x1))
+        x2 = max(0, min(W - 1, x2))
+        y1 = max(0, min(H - 1, y1))
+        y2 = max(0, min(H - 1, y2))
+        if x2 <= x1 or y2 <= y1:
             return [-100., -100., -100.]
 
-        u_coords = valid_kpts[:, 0].astype(np.int32)
-        v_coords = valid_kpts[:, 1].astype(np.int32)
-
-        # Create window offsets
-        offset_range = np.arange(-win_size, win_size + 1)
-        du, dv = np.meshgrid(offset_range, offset_range)
-        du = du.flatten()
-        dv = dv.flatten()
-
-        # Broadcast offsets to all keypoints
-        all_u = (u_coords[:, None] + du[None, :]).reshape(-1)
-        all_v = (v_coords[:, None] + dv[None, :]).reshape(-1)
-
-        # Filter out-of-bounds pixel indices
-        valid_mask = (all_u >= 0) & (all_u < W) & (all_v >= 0) & (all_v < H)
-        all_u = all_u[valid_mask]
-        all_v = all_v[valid_mask]
-
-        # Sample depth values
-        depth_values = depth_img[all_v, all_u]
-        valid_depths = depth_values[(depth_values > 0) & (depth_values < 10000)]
-
-        if valid_depths.size == 0:
+        # 1) Shrink bbox to reduce background at the edges.
+        bw = x2 - x1
+        bh = y2 - y1
+        sx = int(round(edge_shrink * bw))
+        sy = int(round(edge_shrink * bh))
+        xi1 = max(0, x1 + sx)
+        yi1 = max(0, y1 + sy)
+        xi2 = min(W, x2 - sx)
+        yi2 = min(H, y2 - sy)
+        if xi2 <= xi1 or yi2 <= yi1:
             return [-100., -100., -100.]
 
-        # Mode depth estimation
-        values, counts = np.unique(valid_depths, return_counts=True)
-        mode_depth = values[np.argmax(counts)]
-        z = mode_depth / 1000.0  # mm → meters
+        # Crop depth region
+        roi = depth_img[yi1:yi2, xi1:xi2]
 
-        # Use the average of all valid keypoints for projection
-        u_mean = np.mean(valid_kpts[:, 0])
-        v_mean = np.mean(valid_kpts[:, 1])
+        # 2) Valid depth mask (0 < d <= 6m)
+        max_depth_mm = int(max_depth_m * 1000.0)
+        valid = (roi > 0) & (roi <= max_depth_mm)
+        if not np.any(valid):
+            return [-100., -100., -100.]
 
-        # Back-project to 3D
-        x = z * (u_mean - self.cx) / self.fx
-        y = -z * (v_mean - self.cy) / self.fy
+        # Pixel coordinate grids (global image coords)
+        ys, xs = np.mgrid[yi1:yi2, xi1:xi2]
+        dvals_mm = roi[valid].astype(np.float32)
+        xs_v = xs[valid].astype(np.float32)
+        ys_v = ys[valid].astype(np.float32)
 
-        return [float(x), float(y), float(z)]
+        # 3) Get a robust *foreground* depth seed z0 using lower-percentile stats.
+        # People are typically *closer* than the background inside their bbox.
+        # Take the median of the closest 35% valid depths.
+        if dvals_mm.size < min_pix:
+            # not enough depth points in shrunken box; expand to original box as fallback
+            roi_fallback = depth_img[y1:y2, x1:x2]
+            ys_f, xs_f = np.mgrid[y1:y2, x1:x2]
+            valid_fb = (roi_fallback > 0) & (roi_fallback <= max_depth_mm)
+            if not np.any(valid_fb):
+                return [-100., -100., -100.]
+            dvals_mm = roi_fallback[valid_fb].astype(np.float32)
+            xs_v = xs_f[valid_fb].astype(np.float32)
+            ys_v = ys_f[valid_fb].astype(np.float32)
+
+        q35 = np.percentile(dvals_mm, 35.0)
+        fg_pool = dvals_mm[dvals_mm <= q35]
+        if fg_pool.size < max(min_pix, 20):
+            # Fallback: just use overall median if not enough "close" points
+            z0_mm = float(np.median(dvals_mm))
+        else:
+            z0_mm = float(np.median(fg_pool))
+
+        # 4) Build a depth mask around z0 within +/- band_m (meters).
+        band_mm = band_m * 1000.0
+        depth_mask = (dvals_mm >= (z0_mm - band_mm)) & (dvals_mm <= (z0_mm + band_mm))
+        if not np.any(depth_mask):
+            return [-100., -100., -100.]
+
+        xs_m = xs_v[depth_mask]
+        ys_m = ys_v[depth_mask]
+        dsel_mm = dvals_mm[depth_mask]
+
+        # 5) Weighting:
+        #    - Center prior (closer to bbox center -> higher weight)
+        #    - De-emphasize bottom rows (floor) via linear taper
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        # Normalize distances within bbox size
+        dx = (xs_m - cx) / (0.5 * max(bw, 1))
+        dy = (ys_m - cy) / (0.5 * max(bh, 1))
+        center_w = 1.0 / (1.0 + 2.0 * (dx * dx + dy * dy))  # peak=1 at center, decays outward
+
+        # Floor de-emphasis: rows near the bottom get reduced weight
+        # y increases downward; map y in [y1,y2] -> t in [0,1]
+        t_row = (ys_m - y1) / max(bh, 1)
+        floor_w = 1.0 - floor_deemph * t_row
+        floor_w = np.clip(floor_w, 0.2, 1.0)
+
+        # Huber-like depth consistency weight around z0
+        sigma_mm = huber_sigma_m * 1000.0
+        depth_res = (dsel_mm - z0_mm) / max(sigma_mm, 1e-6)
+        huber_w = 1.0 / (1.0 + (depth_res * depth_res))
+
+        w = center_w * floor_w * huber_w
+        if np.sum(w) < 1e-3:
+            return [-100., -100., -100.]
+
+        # 6) Weighted estimates
+        z_m = float(np.sum(w * (dsel_mm / 1000.0)) / np.sum(w))
+        u_mean = float(np.sum(w * xs_m) / np.sum(w))
+        v_mean = float(np.sum(w * ys_m) / np.sum(w))
+
+        # 7) Back-project to 3D (camera intrinsics on self: fx, fy, cx, cy)
+        # x right, y down, z forward. (+y down per your note)
+        x = z_m * (u_mean - self.cx) / self.fx
+        y = z_m * (v_mean - self.cy) / self.fy   # <-- positive down
+        return [float(x), float(y), float(z_m)]
