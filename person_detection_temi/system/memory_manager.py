@@ -37,6 +37,24 @@ class MemoryManager:
 
         self.scaling_factor = torch.ones(1, 6, 1)
 
+    def reset(self):
+        # Storage variables
+        self.pos_feats = torch.zeros((self.max_samples, self.num_parts, self.feature_dim), dtype=torch.float32, device='cpu')
+        self.neg_feats = torch.zeros((self.max_samples, self.num_parts, self.feature_dim), dtype=torch.float32, device='cpu')
+        self.pos_vis = torch.zeros((self.max_samples, self.num_parts), dtype=torch.bool, device='cpu')
+        self.neg_vis = torch.zeros((self.max_samples, self.num_parts), dtype=torch.bool, device='cpu')
+        self.pos_counts = torch.zeros(self.max_samples, dtype=torch.int32, device='cpu')
+        self.neg_counts = torch.zeros(self.max_samples, dtype=torch.int32, device='cpu')
+
+        # Counters
+        self.n_pos = 0
+        self.n_neg = 0
+        self._pos_sampled = set()
+        self._neg_sampled = set()
+
+        self.scaling_factor = torch.ones(1, 6, 1)
+
+
     def _avg_cos_sim(self, f, v, mem_f, mem_v): # UNDERSTOOD
         f = F.normalize(f, dim=-1)
         mem_f = F.normalize(mem_f, dim=-1)

@@ -11,8 +11,9 @@ save_boxes = True
 save_bucket = False
 save_time = False
 show_img = True
-save_memory = True
-save_atentions = True
+save_memory = False
+save_atentions = False
+use_depth = True
 
 def save_execution_times(times, filename):
     """
@@ -115,20 +116,59 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         template_img_path = os.path.join(rgb_dir+f'template_{dataset}.png')
     ### Robocup Datasets ####################################################
 
-    template_img = cv2.imread(template_img_path)
+
+
+    # Load focal lengths into dict
+    focal_dict = {}
+    with open(os.path.join(rgb_dir, "focal_lengths.txt"), "r") as f:
+        for line in f:
+            name, focal = line.strip().split()
+            focal_dict[name] = float(focal)
 
 
     # Setup Detection Pipeline
-    model = SOD(
-        yolo_model_path = yolo_path, 
-        feature_extracture_cfg_path = feature_extracture_cfg_path, 
-        tracker_system_path = bytetrack_path,
-        use_experimental_tracker=True,
-        use_mb=False,
-        kpr_kpt_conf = 0.3,
-        reid_count_thr = 3,
-        class_prediction_thr = 0.8,
-    )
+    # model = SOD( # SORT
+    #     yolo_model_path = yolo_path, 
+    #     feature_extracture_cfg_path = feature_extracture_cfg_path, 
+    #     tracker_system_path = bytetrack_path,
+    #     use_experimental_tracker=True,
+    #     use_mb=False,
+    #     iou_threshold = 0.5, 
+    #     kpr_kpt_conf = 0.3,
+    #     reid_count_thr = 1,
+    #     class_prediction_thr = 0.8,
+    # )
+
+    # model = SOD( # BYTETRACK - Done
+    #     yolo_model_path = yolo_path, 
+    #     feature_extracture_cfg_path = feature_extracture_cfg_path, 
+    #     tracker_system_path = bytetrack_path,
+    #     use_experimental_tracker=False,
+    #     use_mb=False,
+    #     iou_threshold = 0.4, 
+    #     kpr_kpt_conf = 0.3,
+    #     reid_count_thr = 1,
+    #     class_prediction_thr = 0.8,
+    # )
+
+    if use_depth:
+        print("USE SORT+DEPTH")
+        model = SOD( # SORT+DEPTH
+            yolo_model_path = yolo_path, 
+            feature_extracture_cfg_path = feature_extracture_cfg_path, 
+            tracker_system_path = bytetrack_path,
+            use_experimental_tracker=True,
+            use_mb=True,
+            yolo_detection_thr = 0.5,
+            min_hits = 1, 
+            max_age = 1,
+            iou_threshold = 0.5, 
+            mb_threshold = 6.0, 
+            kpr_kpt_conf = 0.3,
+            reid_count_thr = 1,
+            class_prediction_thr = 0.8,
+        )
+
     model.to(device)
 
     model.target_id = 1
@@ -150,24 +190,38 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     times = []
 
     # Iterate through each RGB image
+    # for i, rgb_img_name in enumerate(rgb_images[3*(len(rgb_images)//8):]):
     for i, rgb_img_name in enumerate(rgb_images):
 
-        if i == len(rgb_images) //2:
-            break
+        # if i == len(rgb_images) //2:
+        #     break
 
         rgb_img_path = os.path.join(rgb_dir, rgb_img_name)
 
         rgb_img = cv2.imread(rgb_img_path, cv2.IMREAD_COLOR)  # Read RGB as BGR8
-        # rgb_img = cv2.resize(rgb_img, (640, 480), interpolation=cv2.INTER_LINEAR)
 
         height, width, _ = rgb_img.shape  # Get dimensions
 
         # Generate a random depth image (grayscale)
-        depth_img = np.random.randint(0, 256, (height, width), dtype=np.uint8)
+        if use_depth:
+            depth_path = os.path.join(rgb_dir, "depth", rgb_img_name[:-4]+".npy")
+            depth_img = np.load(depth_path)
+            fx = fy = focal_dict[rgb_img_name]
+            camera_intrinsics = [fx, fy, width/2.0, height/2.0]
+
+            # print("DEPTH DATA")
+            # print("depth shape", depth_img.shape)
+            # print("rgb shape", rgb_img.shape)
+            # print("Max value", np.max(depth_img))
+            # print("CAMERA INTRINSICS", camera_intrinsics)
+            # exit()
+        else:
+            camera_intrinsics=[1.0, 1.0, 1.0, 1.0]
+            depth_img = np.random.randint(0, 256, (height, width), dtype=np.uint8)
 
         # Perform Detection
         start_time = time.time()
-        results = model.detect(rgb_img, depth_img, camera_params=[1.0, 1.0, 1.0, 1.0])
+        results = model.detect(rgb_img, depth_img, camera_params=camera_intrinsics)
         end_time = time.time()
 
         # Compute execution time in milliseconds
@@ -218,8 +272,8 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
         if show_img:
             cv2.imshow("Detection", rgb_img)
             # cv2.waitKey(0)  # Add small delay to update the window
-            cv2.waitKey(67)
-            # cv2.waitKey(3)
+            # cv2.waitKey(67)
+            cv2.waitKey(3)
 
     # Save Bounding Boxes to File
     if save_boxes:
@@ -292,10 +346,12 @@ def main():
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor", "corridor_corners", "hallway_2", "sidewalk", "walking_outdoor"]
     # datasets = ["corridor2"]
     # datasets = ["corridor1", "corridor2", "room", "lab_corridor"]
+    # datasets = ["lab_corridor"]
+
     # datasets = ["sidewalk"]
     # datasets = ["ocl_demo2"]
-    datasets = ["sidewalk", "walking_outdoor"]
-    datasets = ["corridor1"]
+    # datasets = ["sidewalk", "walking_outdoor"]
+    datasets = ["lab_corridor"]
 
     for dataset in datasets:
         evaluation(dataset, ocl_dataset_path = "/media/enrique/Extreme SSD/ocl", crowd_dataset_path = "/home/enrique/Videos/crowds", robot_dataset_path = "/media/enrique/Extreme SSD/jtl-stereo-tracking-dataset/icvs2017_dataset/zed")

@@ -142,16 +142,16 @@ class KalmanBoxTracker(object):
         ])
 
         self.kf.R[2:4, 2:4] *= 10. # This one has to fixed and shriknked to represent the certainty of the measurements
-        self.kf.R[4:, 4:] *= 0.01
+        self.kf.R[4:, 4:] *= 0.1
 
         self.kf.P[:, :4] *= 10.
         self.kf.P[:, 4:6] *= 0.01 # For cartesian coordinates
         self.kf.P[:, 6:] *= 1000.  # give high uncertainty to the unobservable initial velocities
 
         self.kf.Q[8, 8] *= 0.01
-        self.kf.Q[:, 4:6] *= 0.05
+        self.kf.Q[:, 4:6] *= 0.2 # x, y
         self.kf.Q[:, 6:9] *= 0.01
-        self.kf.Q[:, 9:] *= 0.01
+        self.kf.Q[:, 9:] *= 0.25 #x_dot, _dot
 
 
         # Convert bbox to state vector [x,y,s,r,cartesian_x,cartesian_z]
@@ -238,14 +238,14 @@ def associate_detections_to_trackers(detections, trackers, kfs, iou_threshold = 
 
   iou_matrix = iou_batch(detections, trackers)\
   
-#   print("IOU matrix")
-#   print(iou_matrix)
+  print("IOU matrix")
+  print(iou_matrix)
 
   if use_mb:
     mb_matrix = squared_mahalonobis_distance(detections, kfs)
     # Add the Mahalanobies Distances in Here
-    # print("MB matrix")
-    # print(mb_matrix)
+    print("MB matrix")
+    print(mb_matrix)
   else:
     mb_matrix = iou_matrix
 
@@ -268,7 +268,7 @@ def associate_detections_to_trackers(detections, trackers, kfs, iou_threshold = 
     #     matched_indices = np.empty(shape=(0,2))
     else:
         if use_mb:
-            matched_indices = linear_assignment(-iou_matrix + mb_matrix)
+            matched_indices = linear_assignment(-0*iou_matrix + mb_matrix)
         else:
             matched_indices = linear_assignment(-iou_matrix)
   else:
@@ -315,6 +315,10 @@ class Sort(object):
         self.detections_imgs = []
         self.detection_kpts = []
         self.original_kpts = []
+        KalmanBoxTracker.count = 0
+
+    def reset_counter(self):
+        KalmanBoxTracker.count = 0
 
     def update(self, dets, detections_imgs, detection_kpts, original_kpts):
         """

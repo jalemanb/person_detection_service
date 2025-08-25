@@ -146,16 +146,28 @@ class SOD:
     def set_target_id(self):
         self.target_id = self.closest_person_id
         self.blacklist.clear()
+        self.memory.reset()
 
-    def unset_target_id(self):
-        # Set the target ID to none to avoid Re-identifying when Unnecesary
-        self.target_id = None
-        self.blacklist.clear()
+        self.experimental_tracker.reset_counter()
 
         # Reset all the reidentifying mechanism weights to train from scratch whn apropiate
         for layer in self.transformer_classifier.modules():
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
+
+    def unset_target_id(self):
+        # Set the target ID to none to avoid Re-identifying when Unnecesary
+        self.target_id = None
+        self.blacklist.clear()
+        self.memory.reset()
+
+        self.experimental_tracker.reset_counter()
+
+        # Reset all the reidentifying mechanism weights to train from scratch whn apropiate
+        for layer in self.transformer_classifier.modules():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+
 
     def detect(
             self, 
@@ -268,7 +280,7 @@ class SOD:
             track = False, 
             detection_thr = 0.75):
 
-        results = self.detect_mot(img_rgb, detection_class=detection_class, track = track, detection_thr = detection_thr)  
+        results = self.detect_mot(img_rgb, detection_class = detection_class, track = track, detection_thr = detection_thr)  
 
         if not (len(results[0].boxes) > 0):
             return []
