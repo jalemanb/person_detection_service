@@ -1,4 +1,4 @@
-# person_detection_temi/pose_estimation_node.py
+# person_detection_service/pose_estimation_node.py
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
@@ -9,8 +9,8 @@ from cv_bridge import CvBridge
 import numpy as np
 import cv2
 import torch 
-from person_detection_temi.system.SOD import SOD
-from person_detection_temi.system.img_msg_tools import compressed_imgmsg_to_cv2
+from person_detection_service.system.SOD import SOD
+from person_detection_service.system.img_msg_tools import compressed_imgmsg_to_cv2
 import os
 from ament_index_python.packages import get_package_share_directory
 from scipy.spatial.transform import Rotation as R
@@ -74,7 +74,7 @@ class HumanPoseEstimationNode(Node):
         # Setting up Available CUDA device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # Setting up model paths (YOLO for object detection and segmentation, and orientation estimation model)
-        pkg_shared_dir = get_package_share_directory('person_detection_temi')
+        pkg_shared_dir = get_package_share_directory('person_detection_service')
 
         # yolo_models = ['yolo11n-pose.engine','yolo11n-pose.pt']
         yolo_models = ['yolo11n-pose.pt']

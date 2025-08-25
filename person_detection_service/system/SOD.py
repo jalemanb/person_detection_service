@@ -10,12 +10,12 @@ import numpy as np
 import threading
 import shutil
 
-from person_detection_temi.system.kpr_reid import KPR as KPR_torch
-from person_detection_temi.system.kpr_reid_onnx import KPR as KPR_onnx
-from person_detection_temi.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
-from person_detection_temi.system.memory_manager import MemoryManager
-from person_detection_temi.system.sort import Sort
-from person_detection_temi.system.tinyTransformer import TinyTransformer, nn
+from person_detection_service.system.kpr_reid import KPR as KPR_torch
+from person_detection_service.system.kpr_reid_onnx import KPR as KPR_onnx
+from person_detection_service.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
+from person_detection_service.system.memory_manager import MemoryManager
+from person_detection_service.system.sort import Sort
+from person_detection_service.system.tinyTransformer import TinyTransformer, nn
 from pathlib import Path
 import os
 

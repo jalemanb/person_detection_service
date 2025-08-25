@@ -1,3 +1,4 @@
-[submodule "person_detection_temi/submodules/keypoint_promptable_reidentification"]
-	path = person_detection_temi/submodules/keypoint_promptable_reidentification
+[submodule "person_detection_service/submodules/keypoint_promptable_reidentification"]
+	path = person_detection_service/submodules/keypoint_promptable_reidentification
 	url = git@github.com:jalemanb/keypoint_promptable_reidentification.git
+	branch = main

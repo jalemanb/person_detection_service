@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 from glob import glob
 import os
-package_name = 'person_detection_temi'
+package_name = 'person_detection_service'
 # submodules = package_name + "/submodules"
 # utils = package_name + "/submodules" +"/utils"
 
@@ -28,8 +28,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'person_detection_node = person_detection_temi.person_detection_node:main',
-            'eval = person_detection_temi.eval:main',
+            'person_detection_node = person_detection_service.person_detection_node:main',
+            'eval = person_detection_service.eval:main',
         ],
     },
 )

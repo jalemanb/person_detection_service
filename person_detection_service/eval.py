@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import torch
 from ament_index_python.packages import get_package_share_directory
-from person_detection_temi.system.SOD import SOD
+from person_detection_service.system.SOD import SOD
 import time
 
 save_boxes = True
@@ -73,7 +73,7 @@ def evaluation(dataset, ocl_dataset_path, crowd_dataset_path, robot_dataset_path
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load model paths
-    pkg_shared_dir = get_package_share_directory('person_detection_temi')
+    pkg_shared_dir = get_package_share_directory('person_detection_service')
 
     yolo_models = ['yolo11n-pose.engine','yolo11n-pose.pt']
     yolo_model = None

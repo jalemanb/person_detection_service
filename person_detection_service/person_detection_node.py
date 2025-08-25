@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import rclpy
-from person_detection_temi.system.person_detection import HumanPoseEstimationNode
+from person_detection_service.system.person_detection import HumanPoseEstimationNode
 
 def main(args=None):
     rclpy.init(args=args)

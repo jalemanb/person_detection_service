@@ -7,7 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     rviz_config_file = os.path.join(
-        get_package_share_directory('person_detection_temi'), 'rviz', 'config.rviz'
+        get_package_share_directory('person_detection_service'), 'rviz', 'config.rviz'
     )
 
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -20,7 +20,7 @@ def generate_launch_description():
         ),
 
         Node(
-            package='person_detection_temi',
+            package='person_detection_service',
             executable='person_detection_node',
             name='person_detection_node',
             output='screen',
