@@ -1,4 +1,5 @@
-[submodule "person_detection_service/submodules/keypoint_promptable_reidentification"]
-	path = person_detection_service/submodules/keypoint_promptable_reidentification
+[submodule "person_detection_ros/person_detection_ros/submodules/keypoint_promptable_reidentification"]
+	path = person_detection_ros/person_detection_ros/submodules/keypoint_promptable_reidentification
 	url = git@github.com:jalemanb/keypoint_promptable_reidentification.git
 	branch = main
+
