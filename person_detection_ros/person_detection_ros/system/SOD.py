@@ -174,7 +174,7 @@ class SOD:
 
             # YOLO Detection Results
             if self.use_experimental_tracker:
-                print("USING SORT IN STEREOIDs")
+                # print("USING SORT IN STEREOIDs")
 
                 detections_imgs, detection_kpts, bboxes, poses, _, original_kpts = detections
 
@@ -187,7 +187,6 @@ class SOD:
                 # end_time = time.time()
                 # tracking_time = (end_time - start_time)  # Convert to milliseconds
 
-
                 if sort_results is None:
                     return None
                 else:
@@ -199,7 +198,7 @@ class SOD:
                     detections_imgs = detections_imgs.to(device=self.device)
                     detection_kpts = detection_kpts.to(device=self.device)
             else:
-                print("USING BYTETRACK")
+                # print("USING BYTETRACK")
 
                 detections_imgs, detection_kpts, bboxes, poses, track_ids, original_kpts = detections
                 detections_imgs = detections_imgs.to(device=self.device)
