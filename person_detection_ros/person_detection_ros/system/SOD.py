@@ -1,23 +1,16 @@
-import logging
-
 from ultralytics import YOLO
-import torch.nn.functional as F
 from torch.optim import AdamW
 import torch
 import cv2
-import time
 import numpy as np
 import threading
-import shutil
 
 from person_detection_ros.system.kpr_reid import KPR as KPR_torch
-from person_detection_ros.system.kpr_reid_onnx import KPR as KPR_onnx
-from person_detection_ros.system.utils import kp_img_to_kp_bbox, rescale_keypoints, iou_vectorized, compute_center_distances
+from person_detection_ros.system.utils import kp_img_to_kp_bbox, rescale_keypoints
 from person_detection_ros.system.memory_manager import MemoryManager
 from person_detection_ros.system.sort import Sort
 from person_detection_ros.system.tinyTransformer import TinyTransformer, nn
-from pathlib import Path
-import os
+
 
 class SOD:
     def __init__(self, 
@@ -25,7 +18,6 @@ class SOD:
                  yolo_model_path, 
                  feature_extracture_cfg_path, 
                  tracker_system_path = "",
-                 logger_level=logging.DEBUG,
                  use_experimental_tracker = True,
                  yolo_detection_thr = 0.0,
                  # REID Params
@@ -48,38 +40,9 @@ class SOD:
             ) -> None:
         
 
-        log_dir = Path.cwd() / "eval_results"          # ./eval_results
-
-        if log_dir.exists():
-            shutil.rmtree(log_dir)                   # DANGER: wipes the folder
-
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file_path = log_dir / "eval_results.log"   # ./eval_results/eval_results.log
-
-        self.logger = logging.getLogger("SOD")
 
         self.kpr_kpt_conf = kpr_kpt_conf
         self.yolo_detection_thr = yolo_detection_thr
-
-        # Prevent duplicate handlers
-        if not self.logger.hasHandlers():
-            self.logger.setLevel(logger_level)
-
-            # Formatter
-            formatter = logging.Formatter("{asctime} - {levelname} - {message}", style="{")
-
-            # Console handler
-            console_handler = logging.StreamHandler()
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-
-            # File handler
-            os.makedirs(os.path.dirname(log_file_path) or ".", exist_ok=True)
-            file_handler = logging.FileHandler(log_file_path)
-            file_handler.setFormatter(formatter)
-            self.logger.addHandler(file_handler)
-
-        self.logger.info("SOD logger initialized. Logging to file.")
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -137,8 +100,6 @@ class SOD:
         # Intel Realsense Values
         self.fx, self.fy, self.cx, self.cy = None, None, None, None
 
-        self.logger.info("Tracker Armed")
-
     def to(self, device):
         # Set the device to use for the reidenticifaction system (cpu - gpu)
         self.device = device
@@ -188,7 +149,7 @@ class SOD:
             total_execution_time = 0  # To accumulate total time
 
             # Measure time for `masked_detections`
-            start_time = time.time()
+            # start_time = time.time()
             with torch.cuda.stream(self.yolo_stream):
                 detections = self.masked_detections(
                     img_rgb, 
@@ -198,9 +159,8 @@ class SOD:
                     detection_thr=self.yolo_detection_thr
                 )
             self.yolo_stream.synchronize()  # Wait for GPU ops to finish
-            end_time = time.time()
-            masked_detections_time = (end_time - start_time)  # Convert to milliseconds
-            self.logger.info(f"detection: {masked_detections_time:.6f}")
+            # end_time = time.time()
+            # masked_detections_time = (end_time - start_time)  # Convert to milliseconds
 
             if len(detections) < 1:
                 # Call the sort even with empty detections
@@ -220,14 +180,13 @@ class SOD:
 
                 dets = np.concatenate([bboxes, poses[:, [0, 2]]], axis=1)
 
-                start_time = time.time()
+                # start_time = time.time()
 
                 sort_results = self.experimental_tracker.update(dets, detections_imgs, detection_kpts, original_kpts)
 
-                end_time = time.time()
-                tracking_time = (end_time - start_time)  # Convert to milliseconds
+                # end_time = time.time()
+                # tracking_time = (end_time - start_time)  # Convert to milliseconds
 
-                self.logger.info(f"tracking: {tracking_time:.6f}")
 
                 if sort_results is None:
                     return None
@@ -413,7 +372,7 @@ class SOD:
         if not self.reid_lock.acquire(blocking=False):
             return  # Skip if already running
         try:
-            start_time = time.time()
+            # start_time = time.time()
 
             with torch.cuda.stream(self.reid_stream):
 
@@ -454,16 +413,14 @@ class SOD:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.transformer_classifier.parameters(), max_norm=0.5)
                 self.classifier_optimizer.step()  
-                self.logger.info(f"loss: {loss.item()}, is_pseudo: {is_pseudo}")
                 # Online Continual Learning #################################################################################
                 #############################################################################################################
 
             self.reid_stream.synchronize()
 
-            end_time = time.time()
-            train_time = (end_time - start_time)  # Convert to milliseconds
+            # end_time = time.time()
+            # train_time = (end_time - start_time)  # Convert to milliseconds
 
-            self.logger.info(f"train: {train_time:.6f}")
         finally:
             self.reid_lock.release()
 
@@ -472,7 +429,7 @@ class SOD:
             return  # Skip if already running
 
         try:
-            start_time = time.time()
+            # start_time = time.time()
 
             with torch.cuda.stream(self.reid_stream):
                 # This is the reidentification procedure
@@ -513,10 +470,9 @@ class SOD:
    
             self.reid_stream.synchronize()
 
-            end_time = time.time()
-            reid_time = (end_time - start_time)  # Convert to milliseconds
+            # end_time = time.time()
+            # reid_time = (end_time - start_time)  # Convert to milliseconds
 
-            self.logger.info(f"reid: {reid_time:.6f}")
         finally:
             self.reid_lock.release()
 
